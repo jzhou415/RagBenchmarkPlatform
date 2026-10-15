@@ -1,0 +1,66 @@
+# =============================================================================
+# Golden set schema — RagBenchmarkPlatform, Phase 1 (retrieval evaluation)
+# Template v1.0. One file per split, same schema:
+#   golden_dev.yaml / golden_heldout.yaml
+# =============================================================================
+
+schema_version: "1.0"
+
+corpus:
+  name: postgresql-18-manual      # public demo corpus, no privacy concerns
+  source: pdf
+  pages: 3156
+  dev_subset: "SQL reference chapter"   # small, fast iteration loop
+  heldout_subset: "full manual"         # realistic distractor volume
+
+ingestion:
+  # Ground-truth chunk references below are ONLY valid for this ingestion config.
+  # Change the parser or chunker and chunk ids shift -> ground truth must be rebuilt.
+  config_hash: "<sha256 of the ingestion config file>"
+  parser: docling                  # docling | pymupdf | unstructured
+  chunk_size: 1000
+  chunk_overlap: 200
+
+# --- Conventions used below --------------------------------------------------
+# relevance (graded, for nDCG):
+#   3 = chunk contains the exact answer
+#   2 = directly answers most of the question
+#   1 = background / useful context only
+#   0 = not relevant (omit from the list)
+#
+# query_type (drives the BM25-vs-semantic stratification):
+#   exact_term  -> rare exact terms in the question (BM25 should win)
+#   paraphrase  -> natural-language / synonym phrasing (dense should win)
+#   multi_hop   -> answer needs 2+ chunks combined
+#
+# chunk_id format: <corpus>-p<page:04d>-c<chunk-on-page:02d>, taken from the
+# ingestion manifest. `page` is kept as human-verification aid.
+
+questions:
+  - id: q001
+    split: dev                      # dev | heldout
+    question: "What is the default value of shared_buffers in PostgreSQL 18?"
+    query_type: exact_term
+    content_tags: [lookup]          # lookup | table | policy | aggregation
+    expected_answer: "128MB"        # optional in Phase 1; required for Phase 2
+    answer_span: "The default setting is 128MB"   # optional: exact text in chunk
+    ground_truth:
+      - chunk_id: "pg18-p0128-c03"
+        page: 128
+        relevance: 3
+      - chunk_id: "pg18-p0129-c01"
+        page: 129
+        relevance: 1
+    notes: ""                       # reviewer initials + date once human-verified
+
+  - id: q002
+    split: dev
+    question: "How does PostgreSQL handle two transactions updating the same row at the same time?"
+    query_type: paraphrase
+    content_tags: [policy]
+    expected_answer: "..."
+    ground_truth:
+      - chunk_id: "pg18-p0455-c02"
+        page: 455
+        relevance: 3
+    notes: ""
