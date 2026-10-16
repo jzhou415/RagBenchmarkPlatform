@@ -1,0 +1,21 @@
+# secrets
+.env
+
+# source documents (may be private) — never commit
+*.pdf
+
+# local data: vector DBs, named indexes, manifests, run outputs
+data/
+runs/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# streamlit
+.streamlit/secrets.toml
+
+# os
+.DS_Store

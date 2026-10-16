@@ -1,0 +1,20 @@
+# UI + API
+streamlit
+fastapi
+uvicorn
+
+# ingestion
+docling
+langchain-text-splitters
+
+# retrieval
+openai            # text-embedding-3-small, gpt-4o-mini
+chromadb
+rank-bm25
+numpy
+
+# eval / config
+pyyaml
+
+# optional: local cross-encoder reranker (uncomment if needed)
+# sentence-transformers
