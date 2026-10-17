@@ -1,7 +1,11 @@
-"""Step 2: parse the corpus PDF into per-page markdown with metadata (Docling).
+"""Step 2 (v2 DRAFT): parse the corpus PDF into per-page markdown (Docling).
 
-Contract
---------
+DRAFT for review -- NOT committed. Needs John's per-write approval before it
+replaces src/parse.py, and tests/test_parse.py must be rewritten against the
+slimmer interface (see drafts/test_parse_v2_draft.py).
+
+Contract (unchanged from committed src/parse.py)
+------------------------------------------------
 Input:  source PDF (+ optional ingestion config YAML from step 1).
 Output: <out_dir>/pages.jsonl          one JSON object per line:
             {"page_no": 1, "text": "<markdown incl. tables>",
@@ -13,6 +17,27 @@ Output: <out_dir>/pages.jsonl          one JSON object per line:
 The page records feed step 4 (chunk.py), which needs (page_no, text) per
 page. Tables are rendered into the page markdown -- never dropped -- because
 retrieval over table content is a first-class eval axis (content_tags=table).
+
+What changed vs the committed version
+-------------------------------------
+The old pages_from_document hand-rolled per-page grouping via
+iterate_items() + provenance bookkeeping and its own table_to_markdown
+renderer. John's parse_docling (parse_chunk.py) showed export_to_markdown
+accepts page_no, so Docling's own serializer now does reading order and
+table placement -- simpler AND more faithful.
+
+Kept deliberately:
+- parse_manifest.json -- provenance (config_hash, corpus_hash, code_hash)
+  that lets step 6 refuse to build indexes from a stale parse.
+- table_count per page (from doc.tables + item provenance) -- cheap corpus stat.
+- section per page (nearest preceding SECTION_HEADER from doc.texts) -- step 3
+  uses it to scope question generation to the Part VI chapter for the dev split.
+- compact_tables=True -- the measured ESPP fix (~47k chars of alignment
+  padding) that the old version dropped.
+
+Gone: the iterate_items grouping pass, _is_table, and table_to_markdown
+(plus its TestTableToMarkdown tests). _page_no is now _prov_page_no and
+_label_name is kept, both slimmed to header/table bookkeeping only.
 
 Run:  python -m src.parse --pdf <file> [--config <ingestion.yaml>] [--out <dir>]
 """
@@ -65,7 +90,7 @@ class PageRecord:
     section: str = ""    # nearest preceding section header (best effort)
 
 
-def _page_no(item) -> int:
+def _prov_page_no(item) -> int:
     """1-based page number from Docling provenance; 1 when absent."""
     prov = getattr(item, "prov", None)
     if prov:
@@ -75,103 +100,57 @@ def _page_no(item) -> int:
     return 1
 
 
-def _is_table(item) -> bool:
-    return hasattr(item, "data") and hasattr(getattr(item, "data"), "table_cells")
-
-
 def _label_name(item) -> str:
     label = getattr(item, "label", None)
     return getattr(label, "name", "") or ""
 
 
-def table_to_markdown(table) -> str:
-    """Render a Docling table as a markdown grid.
+def pages_from_document(doc, page_nos=None) -> list[PageRecord]:
+    """Per-page extraction via Docling's own serializer.
 
-    Uses the table's own exporter when available, otherwise builds a simple
-    grid from TableData cells. Spans beyond the start cell are not expanded;
-    the text stays attached to its origin cell so number<->label association
-    survives (this is what the ESPP benchmark showed matters).
+    text:        doc.export_to_markdown(page_no=p, compact_tables=True)
+    table_count: number of doc.tables items whose provenance lands on the page
+    section:     nearest preceding SECTION_HEADER in doc.texts (best effort,
+                 carried forward across pages)
     """
-    export = getattr(table, "export_to_markdown", None)
-    if callable(export):
-        try:
-            md = export()
-            if md and md.strip():
-                return md.strip()
-        except Exception:
-            pass
-    data = getattr(table, "data", None)
-    cells = getattr(data, "table_cells", None) or []
-    grid: dict[int, dict[int, str]] = {}
-    max_row, max_col = -1, -1
-    for cell in cells:
-        r = int(getattr(cell, "start_row_offset_idx", 0))
-        c = int(getattr(cell, "start_col_offset_idx", 0))
-        grid.setdefault(r, {})[c] = (getattr(cell, "text", "") or "").strip()
-        max_row, max_col = max(max_row, r), max(max_col, c)
-    if max_row < 0:
-        return ""
-    lines = []
-    for r in range(max_row + 1):
-        row = grid.get(r, {})
-        lines.append("| " + " | ".join(row.get(c, "") for c in range(max_col + 1)) + " |")
-        if r == 0:
-            lines.append("| " + " | ".join("---" for _ in range(max_col + 1)) + " |")
-    return "\n".join(lines)
+    if page_nos is None:
+        page_nos = sorted(doc.pages.keys())
 
+    table_counts: dict[int, int] = {}
+    for table in getattr(doc, "tables", []):
+        pno = _prov_page_no(table)
+        table_counts[pno] = table_counts.get(pno, 0) + 1
 
-def pages_from_document(doc) -> list[PageRecord]:
-    """Single document-order pass: group text + tables per page, track sections.
-
-    Works against the real DoclingDocument and against the stub documents
-    used in tests (duck-typed: items need .text/.label/.prov; tables need
-    .data.table_cells).
-    """
-    buckets: dict[int, dict] = {}
-    current_section = ""
-
-    def bucket(pno: int) -> dict:
-        return buckets.setdefault(pno, {"parts": [], "tables": 0, "section": ""})
-
-    try:
-        ordered = list(doc.iterate_items())
-    except Exception:
-        ordered = [(t, 0) for t in getattr(doc, "texts", [])]
-
-    for item, _level in ordered:
-        pno = _page_no(item)
-        b = bucket(pno)
-        label = _label_name(item)
+    headers: dict[int, str] = {}
+    for item in getattr(doc, "texts", []):
         text = (getattr(item, "text", "") or "").strip()
+        if "SECTION_HEADER" in _label_name(item) and text:
+            headers[_prov_page_no(item)] = text  # last header on the page wins
 
-        if "SECTION_HEADER" in label and text:
-            current_section = text
-        if _is_table(item):
-            md = table_to_markdown(item)
-            if md:
-                b["parts"].append(md)
-            b["tables"] += 1
-        elif text:
-            b["parts"].append(text)
-        if current_section:
-            b["section"] = current_section  # latest header wins; best effort
+    section, sections = "", {}
+    for pno in page_nos:
+        if pno in headers:
+            section = headers[pno]
+        sections[pno] = section
 
     records = []
-    for pno in sorted(buckets):
-        b = buckets[pno]
-        text = "\n\n".join(b["parts"])
+    for pno in page_nos:
+        # compact_tables=True: plain padded markdown inflates char counts with
+        # alignment whitespace (measured ~47k chars of pure padding on the ESPP
+        # PDF), which would bloat chunks and embeddings with spaces.
+        text = (doc.export_to_markdown(page_no=pno, compact_tables=True) or "").strip()
         records.append(PageRecord(
             page_no=pno,
             text=text,
             char_count=len(text),
-            table_count=b["tables"],
-            section=b["section"],
+            table_count=table_counts.get(pno, 0),
+            section=sections[pno],
         ))
     return records
 
 
 # ---------------------------------------------------------------------------
-# driver
+# driver (unchanged contract)
 # ---------------------------------------------------------------------------
 
 def parse_pdf(
