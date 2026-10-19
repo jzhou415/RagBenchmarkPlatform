@@ -34,6 +34,7 @@ Dev and held-out sets are generated in separate runs (same quotas).
 import argparse
 import json
 import random
+import re
 import sys
 
 # ---------------------------------------------------------------------------
@@ -74,7 +75,7 @@ Rules:
   expected_answer: "..."   # verbatim from the page; used for grade-3 pre-marking
   provenance: auto
 
-Do not add commentary.
+Do not add commentary. Do not wrap the output in code fences.
 """
 
 # ---------------------------------------------------------------------------
@@ -96,6 +97,13 @@ def _require_yaml():
     except ImportError:
         sys.exit("pyyaml not installed: pip install pyyaml")
     return yaml
+
+
+def _strip_fences(text):
+    """Remove ```yaml code fences. Models add them despite the "YAML only"
+    instruction, and yaml.safe_load chokes on the backticks."""
+    m = re.search(r"```(?:yaml)?\s*\n(.*?)```", text.strip(), re.DOTALL)
+    return m.group(1) if m else text
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +176,8 @@ def gen_one(client, model, yaml_mod, page, page2, query_type, tag):
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.7,
             )
-            data = yaml_mod.safe_load(resp.choices[0].message.content)
+            text = _strip_fences(resp.choices[0].message.content)
+            data = yaml_mod.safe_load(text)
             item = data[0] if isinstance(data, list) else data
             return {
                 "question": item["question"].strip(),
