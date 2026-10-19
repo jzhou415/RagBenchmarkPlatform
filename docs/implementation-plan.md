@@ -43,6 +43,16 @@ run on a local machine (API keys stay in `.env`, never in the repo).
     progress, named-index table with stale reasons.
 14. Evaluation page + Results page (design TBD).
 
+## Known limitations
+
+- Docling's `MatchingPostProcessor` logs warnings when PDF text cells can't
+  be fit into a predicted table row/column grid (e.g. "13 of 35 pdf cells
+  matched neither a row nor a column band ... and were dropped from the
+  table"). Small drop counts (1–2 cells) are noise; tables with a large
+  share of dropped cells may be mis-structured — spot-check those pages
+  before sampling them for table-tagged questions.
+  (Observed 2026-10-18 on the PostgreSQL 18 manual parse.)
+
 ## Working agreement
 
 - Assistant drafts → John reviews → commit (per-write approval) → John runs
