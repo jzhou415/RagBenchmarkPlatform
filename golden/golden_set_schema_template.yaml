@@ -1,22 +1,26 @@
 # =============================================================================
 # Golden set schema — RagBenchmarkPlatform, Phase 1 (retrieval evaluation)
-# Template v1.0. One file per split, same schema:
+# Template v1.1. One file per split, same schema:
 #   golden_dev.yaml / golden_heldout.yaml
+# v1.1 changelog: added `provenance` per question (auto | spot-checked |
+# human-verified) so a reader of the eval report knows how much to trust the
+# ground truth. Fully auto-generated sets are the platform default; the
+# human-verified label requires initials + date in `notes`.
 # =============================================================================
 
-schema_version: "1.0"
+schema_version: "1.1"
 
 corpus:
   name: postgresql-18-manual      # public demo corpus, no privacy concerns
   source: pdf
   pages: 3156
-  dev_subset: "SQL reference chapter"   # small, fast iteration loop
-  heldout_subset: "full manual"         # realistic distractor volume
+  dev_subset: "Part VI (SQL Commands) + Appendix C (SQL Key Words)"   # small, fast iteration loop
+  heldout_subset: "everything except the dev pages"   # realistic distractor volume
 
 ingestion:
   # Ground-truth chunk references below are ONLY valid for this ingestion config.
   # Change the parser or chunker and chunk ids shift -> ground truth must be rebuilt.
-  config_hash: "<sha256 of the ingestion config file>"
+  config_hash: "<IngestionConfig.config_hash() from src/config.py -- sha256 of the canonical ingestion config; stamped by chunk.py into chunk_manifest.yaml and copied here by auto_map.py>"
   parser: docling                  # docling | pymupdf | unstructured
   chunk_size: 1000
   chunk_overlap: 200
@@ -33,34 +37,42 @@ ingestion:
 #   paraphrase  -> natural-language / synonym phrasing (dense should win)
 #   multi_hop   -> answer needs 2+ chunks combined
 #
-# chunk_id format: <corpus>-p<page:04d>-c<chunk-on-page:02d>, taken from the
-# ingestion manifest. `page` is kept as human-verification aid.
+# provenance (how the ground_truth below was produced):
+#   auto            -> fully LLM-generated + auto-mapped, no human review
+#   spot-checked    -> in the review queue (multi-hop or ~20% sample), reviewed
+#   human-verified  -> fully human-mapped or human-confirmed, initials in notes
+#
+# chunk_id format: p<page>_c<chunk-on-page:02d>, exactly as emitted by
+# chunk.py into the ingestion manifest. `page` is kept as a
+# human-verification aid and must equal the manifest's page_no.
 
 questions:
   - id: q001
     split: dev                      # dev | heldout
+    provenance: auto                # auto | spot-checked | human-verified
     question: "What is the default value of shared_buffers in PostgreSQL 18?"
     query_type: exact_term
     content_tags: [lookup]          # lookup | table | policy | aggregation
     expected_answer: "128MB"        # optional in Phase 1; required for Phase 2
     answer_span: "The default setting is 128MB"   # optional: exact text in chunk
     ground_truth:
-      - chunk_id: "pg18-p0128-c03"
+      - chunk_id: "p128_c03"
         page: 128
         relevance: 3
-      - chunk_id: "pg18-p0129-c01"
+      - chunk_id: "p129_c01"
         page: 129
         relevance: 1
     notes: ""                       # reviewer initials + date once human-verified
 
   - id: q002
     split: dev
+    provenance: auto
     question: "How does PostgreSQL handle two transactions updating the same row at the same time?"
     query_type: paraphrase
     content_tags: [policy]
     expected_answer: "..."
     ground_truth:
-      - chunk_id: "pg18-p0455-c02"
+      - chunk_id: "p455_c02"
         page: 455
         relevance: 3
     notes: ""
