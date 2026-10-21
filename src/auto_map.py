@@ -10,8 +10,10 @@ chunk.py) with graded relevance 0-3:
 
   1. Candidate pools: per question, union of top-20 BM25 + top-20
      dense (text-embedding-3-small, the ingestion config's embedding
-     model). Two different signals on purpose -- a pool built from one
-     retriever inherits that retriever's blind spots.
+     model), PLUS every chunk on the question's source_pages (forced
+     in, so a source page can never silently miss grading). Two
+     different signals on purpose -- a pool built from one retriever
+     inherits that retriever's blind spots.
   2. Verbatim shortcut: chunks containing the expected answer verbatim
      are pre-marked as grade-3 candidates for the judge to confirm.
   3. gpt-4o-mini grades every candidate 0-3 against the rubric.
@@ -138,6 +140,19 @@ def candidate_pool(question, chunks, bm25, chunk_vecs, query_vec):
                            key=lambda i: sims[i],
                            reverse=True)[:TOP_N])
     return sorted(bm25_top | dense_top)
+
+
+def force_source_pages(pool_idx, chunks, source_pages):
+    """Indices of chunks on the question's source pages not already pooled.
+
+    The pool is only a pre-filter for the expensive judge; guaranteeing
+    the source pages are judged cannot inflate grades (the judge still
+    scores 0-3), but it closes the "source page never graded" miss class.
+    """
+    pooled = set(pool_idx)
+    src = set(source_pages or [])
+    return sorted(i for i, c in enumerate(chunks)
+                  if c["page_no"] in src and i not in pooled)
 
 
 def verbatim_hit(expected_answer, chunk_text):
@@ -270,6 +285,11 @@ def main(argv=None, client=None):
         qtext = q["question"]
         q_vec = embed_query(client, qtext)
         pool_idx = candidate_pool(qtext, chunks, bm25, chunk_vecs, q_vec)
+        forced = force_source_pages(pool_idx, chunks, q.get("source_pages"))
+        if forced:
+            print(f"  {q['id']}: +{len(forced)} source-page chunk(s) "
+                  f"forced into pool")
+            pool_idx = sorted(set(pool_idx) | set(forced))
         candidates = [{
             "chunk_id": chunks[i]["chunk_id"],
             "text": chunks[i]["text"],

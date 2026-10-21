@@ -18,6 +18,7 @@ import yaml
 from src.auto_map import (
     build_review_queue,
     candidate_pool,
+    force_source_pages,
     grade_candidates,
     get_embeddings,
     main,
@@ -164,6 +165,28 @@ class TestCandidatePool(unittest.TestCase):
         b = candidate_pool("memory buffers", chunks, bm25, chunk_vecs,
                            _vec("memory buffers"))
         self.assertEqual(a, b)
+
+
+class TestForceSourcePages(unittest.TestCase):
+    def _chunks(self):
+        # 45 chunks: pages 1..9 get 5 chunks each (indices 0-44)
+        return [{"chunk_id": f"p{p}_c{i}", "page_no": p, "text": "x"}
+                for p in range(1, 10) for i in range(5)]
+
+    def test_missing_source_chunks_forced_in(self):
+        chunks = self._chunks()
+        forced = force_source_pages([0, 1, 2], chunks, [7])
+        self.assertEqual(forced, [30, 31, 32, 33, 34])
+
+    def test_already_pooled_source_chunks_not_duplicated(self):
+        chunks = self._chunks()
+        forced = force_source_pages([30, 31, 32, 33, 34], chunks, [7])
+        self.assertEqual(forced, [])
+
+    def test_empty_source_pages(self):
+        chunks = self._chunks()
+        self.assertEqual(force_source_pages([0], chunks, []), [])
+        self.assertEqual(force_source_pages([0], chunks, None), [])
 
 
 class TestEmbeddingsCache(unittest.TestCase):

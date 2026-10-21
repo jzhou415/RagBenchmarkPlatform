@@ -14,8 +14,9 @@ corpus:
   name: postgresql-18-manual      # public demo corpus, no privacy concerns
   source: pdf
   pages: 3156
-  dev_subset: "Part VI (SQL Commands) + Appendix C (SQL Key Words)"   # small, fast iteration loop
-  heldout_subset: "everything except the dev pages"   # realistic distractor volume
+  dev_subset: "Part VI (SQL Commands) + Appendix C (SQL Key Words)"   # question source only
+  heldout_subset: "everything except the dev pages"                   # question source only
+  eval_corpus: "full manual for both splits -- one embedding set, one index; dev/held-out differ only in their question sets (decision 2026-10-21)"
 
 ingestion:
   # Ground-truth chunk references below are ONLY valid for this ingestion config.
