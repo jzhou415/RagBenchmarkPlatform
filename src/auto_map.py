@@ -17,8 +17,12 @@ chunk.py) with graded relevance 0-3:
   2. Verbatim shortcut: chunks containing the expected answer verbatim
      are pre-marked as grade-3 candidates for the judge to confirm.
   3. gpt-4o-mini grades every candidate 0-3 against the rubric.
+     Incomplete grading batches (dropped candidates, unparseable JSON)
+     are retried once -- without the retry, judge misses silently become
+     grade 0.
   4. Emits golden YAML (schema v1.1) + review_queue.yaml: all
-     multi_hop questions, every question with no grade-3 chunk, and a
+     multi_hop questions, every question with no grade-3 chunk, every
+     question where the judge downgraded a pre-marked chunk, and a
      ~20% random sample of the rest -- the human spot-check list.
      Reviewed questions get their provenance upgraded by hand.
 
@@ -170,60 +174,87 @@ GRADING_SYSTEM = (
 )
 
 
+def _grade_batch(client, question, expected_answer, batch):
+    """Grade one batch. Returns ({chunk_id: (grade, rationale)}, complete).
+
+    complete is False when the judge's JSON was unparseable or omitted
+    candidates -- both used to silently become grade 0.
+    """
+    user = (
+        f"Question: {question}\n"
+        f"Expected answer: {expected_answer or '(not provided)'}\n\n"
+    )
+    for cand in batch:
+        tag = (" [PRE-GRADED 3: the expected answer appears verbatim in "
+               "this chunk -- keep grade 3 unless the match is clearly "
+               "incidental, e.g. the answer string is part of a longer "
+               "unrelated word]") if cand["premarked"] else ""
+        user += f"--- chunk {cand['chunk_id']}{tag}\n{cand['text'][:2000]}\n\n"
+    resp = client.chat.completions.create(
+        model=JUDGE_MODEL, temperature=0,
+        response_format={"type": "json_object"},
+        messages=[{"role": "system", "content": GRADING_SYSTEM},
+                  {"role": "user", "content": user}])
+    raw = resp.choices[0].message.content
+    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
+    try:
+        grades = json.loads(raw)["grades"]
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        print(f"WARNING: grading call failed to parse ({e})", file=sys.stderr)
+        return {}, False
+    out, seen = {}, set()
+    for g in grades:
+        cid = g.get("chunk_id")
+        try:
+            grade = max(0, min(3, int(g.get("grade", 0))))
+        except (TypeError, ValueError):
+            grade = 0
+        if cid and cid not in seen:
+            out[cid] = (grade, g.get("rationale", ""))
+            seen.add(cid)
+    complete = all(c["chunk_id"] in seen for c in batch)
+    return out, complete
+
+
 def grade_candidates(client, question, expected_answer, candidates):
     """candidates: [{chunk_id, text, premarked}].
     Returns {chunk_id: (grade, rationale)}. Never raises on bad judge
-    output: unparseable batches and dropped candidates become grade 0.
+    output: incomplete batches are retried once, then any still-missing
+    candidates become grade 0.
     """
     out = {}
     for start in range(0, len(candidates), GRADING_BATCH):
         batch = candidates[start:start + GRADING_BATCH]
-        user = (
-            f"Question: {question}\n"
-            f"Expected answer: {expected_answer or '(not provided)'}\n\n"
-        )
+        grades, complete = _grade_batch(client, question, expected_answer,
+                                       batch)
+        if not complete:
+            # The judge sometimes drops candidates from its JSON or emits
+            # unparseable output. One retry usually completes the batch;
+            # without it, drops silently become grade 0 (observed 2026-10-21:
+            # a pre-marked verbatim chunk graded 0).
+            print("  WARNING: incomplete grading batch, retrying once",
+                  file=sys.stderr)
+            retry_grades, _ = _grade_batch(client, question,
+                                           expected_answer, batch)
+            for cid, g in retry_grades.items():
+                grades.setdefault(cid, g)
         for cand in batch:
-            tag = (" [PRE-GRADED 3: expected answer appears verbatim -- "
-                   "confirm or adjust]") if cand["premarked"] else ""
-            user += f"--- chunk {cand['chunk_id']}{tag}\n{cand['text'][:2000]}\n\n"
-        resp = client.chat.completions.create(
-            model=JUDGE_MODEL, temperature=0,
-            response_format={"type": "json_object"},
-            messages=[{"role": "system", "content": GRADING_SYSTEM},
-                      {"role": "user", "content": user}])
-        raw = resp.choices[0].message.content
-        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
-        try:
-            grades = json.loads(raw)["grades"]
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            print(f"WARNING: grading call failed to parse ({e}); "
-                  f"marking batch 0", file=sys.stderr)
-            for cand in batch:
-                out[cand["chunk_id"]] = (0, "grading parse failure")
-            continue
-        seen = set()
-        for g in grades:
-            cid = g.get("chunk_id")
-            try:
-                grade = max(0, min(3, int(g.get("grade", 0))))
-            except (TypeError, ValueError):
-                grade = 0
-            if cid and cid not in seen:
-                out[cid] = (grade, g.get("rationale", ""))
-                seen.add(cid)
-        for cand in batch:  # judge dropped a candidate -> grade 0
-            out.setdefault(cand["chunk_id"], (0, "not graded by judge"))
+            out[cand["chunk_id"]] = grades.get(
+                cand["chunk_id"], (0, "not graded by judge"))
     return out
 
 
-def build_review_queue(questions, no_grade3_ids, rng):
-    """All multi_hop + all no-grade-3 questions + ~20% sample of the rest."""
+def build_review_queue(questions, no_grade3_ids, rng, overridden_ids=()):
+    """All multi_hop + all no-grade-3 questions + pre-mark overrides +
+    ~20% sample of the rest."""
     queued = {}
     for q in questions:
         if q.get("query_type") == "multi_hop":
             queued[q["id"]] = "multi_hop: full human review"
     for qid in no_grade3_ids:
         queued.setdefault(qid, "no grade-3 chunk found: needs human attention")
+    for qid in overridden_ids:
+        queued.setdefault(qid, "pre-marked chunk downgraded: verify by hand")
     rest = [q["id"] for q in questions if q["id"] not in queued]
     k = max(1, int(len(rest) * SPOT_CHECK_FRAC)) if rest else 0
     for qid in sorted(rng.sample(rest, min(k, len(rest)))):
@@ -281,6 +312,7 @@ def main(argv=None, client=None):
 
     golden_questions = []
     no_grade3_ids = []
+    overridden_ids = []
     for q in questions:
         qtext = q["question"]
         q_vec = embed_query(client, qtext)
@@ -326,12 +358,19 @@ def main(argv=None, client=None):
         n3 = sum(1 for g in ground_truth if g["relevance"] == 3)
         print(f"  {q['id']}: pool={len(pool_idx)} "
               f"graded={len(ground_truth)} grade3={n3}")
+        overridden = [cand["chunk_id"] for cand in candidates
+                      if cand["premarked"] and grades[cand["chunk_id"]][0] < 3]
+        if overridden:
+            print(f"  WARNING {q['id']}: pre-mark overridden for "
+                  f"{overridden} -- added to review queue", file=sys.stderr)
+            overridden_ids.append(q["id"])
         if n3 == 0:
             no_grade3_ids.append(q["id"])
             print(f"  WARNING {q['id']}: no grade-3 chunk found -- "
                   f"added to review queue", file=sys.stderr)
 
-    review = build_review_queue(questions, no_grade3_ids, random.Random(42))
+    review = build_review_queue(questions, no_grade3_ids,
+                                random.Random(42), overridden_ids)
 
     golden = {
         "schema_version": "1.1",

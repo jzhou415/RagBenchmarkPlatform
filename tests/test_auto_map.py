@@ -16,6 +16,7 @@ from pathlib import Path
 import yaml
 
 from src.auto_map import (
+    _grade_batch,
     build_review_queue,
     candidate_pool,
     force_source_pages,
@@ -97,6 +98,8 @@ class FakeChat:
             grades.append({"chunk_id": cid, "grade": grade,
                            "rationale": "fake judge"})
         if self.mode == "drop_one" and grades:
+            grades = grades[1:]
+        if self.mode == "drop_first_call" and self.calls == 1 and grades:
             grades = grades[1:]
         payload = json.dumps({"grades": grades})
         if self.mode == "fenced":
@@ -226,10 +229,26 @@ class TestGrading(unittest.TestCase):
         self.assertEqual(out["p0100_c00"][0], 0)
         self.assertEqual(out["p0100_c00"][1], "not graded by judge")
 
-    def test_garbage_output_defaults_zero(self):
+    def test_incomplete_batch_retried_once(self):
+        # Judge drops a candidate on the first call but completes on
+        # retry -- the pre-marked chunk must keep its grade.
+        out = grade_candidates(FakeClient(chat_mode="drop_first_call"),
+                               "q?", "128MB", self._candidates())
+        self.assertEqual(out["p0100_c00"][0], 3)
+        self.assertEqual(out["p0101_c00"][0], 0)
+
+    def test_garbage_output_retried_then_zero(self):
         out = grade_candidates(FakeClient(chat_mode="garbage"),
                                "q?", "128MB", self._candidates())
         self.assertTrue(all(g == 0 for g, _ in out.values()))
+
+    def test_grade_batch_complete_flag(self):
+        batch = self._candidates()
+        _, complete = _grade_batch(FakeClient(), "q?", "128MB", batch)
+        self.assertTrue(complete)
+        _, complete = _grade_batch(FakeClient(chat_mode="drop_one"),
+                                   "q?", "128MB", batch)
+        self.assertFalse(complete)
 
 
 class TestReviewQueue(unittest.TestCase):
@@ -247,6 +266,21 @@ class TestReviewQueue(unittest.TestCase):
         self.assertIn("q005", ids)                          # no grade-3
         # 2 multi_hop + 1 no-grade3 + max(1, int(7*0.2))=1 spot-check
         self.assertEqual(len(ids), 4)
+
+    def test_premark_override_flagged(self):
+        questions = [{"id": f"q{i:03d}", "query_type": "exact_term"}
+                     for i in range(10)]
+        queue = build_review_queue(questions, [], random.Random(42),
+                                   overridden_ids=["q003"])
+        by_id = {e["id"]: e["reason"] for e in queue}
+        self.assertIn("q003", by_id)
+        self.assertIn("pre-marked", by_id["q003"])
+        # override on an already-queued multi_hop keeps original reason
+        questions[0]["query_type"] = "multi_hop"
+        queue = build_review_queue(questions, [], random.Random(42),
+                                   overridden_ids=["q000"])
+        by_id = {e["id"]: e["reason"] for e in queue}
+        self.assertEqual(by_id["q000"], "multi_hop: full human review")
 
 
 class TestEndToEnd(unittest.TestCase):
