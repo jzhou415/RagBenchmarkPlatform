@@ -63,6 +63,7 @@ b. Write ONE question that CANNOT be answered from either page alone -- the
    again before outputting anything.
 c. In expected_answer, put fact_A on line 1 and fact_B on line 2, each copied
    VERBATIM from its page (no rewording, no compression into a single value).
+   Do not wrap the facts in quotation marks.
 d. Attribute each fact to its page with fact_pages, in the same order as the
    expected_answer lines.
 """
@@ -186,6 +187,16 @@ def _verbatim_span(line, text, min_len=15):
     return len(nline) >= min_len and nline in ntext
 
 
+def _strip_quotes(s):
+    """Remove decorative quotation marks the model wraps facts in.
+
+    The model often emits '"fact..."' or "'fact...'" -- the quotes are not
+    part of the page text and must not fail the verbatim check. Only
+    leading/trailing decoration is stripped; interior quotes still count.
+    """
+    return s.strip("\"'‘’“”")
+
+
 def check_multihop(q, pages_by_no):
     """Automated gate for multi_hop questions.
 
@@ -213,10 +224,33 @@ def check_multihop(q, pages_by_no):
         return False, (f"fact_pages {fact_pages} must cover "
                        f"source_pages {src}")
     for line, pg in zip(lines, fact_pages):
-        if not _verbatim_span(line, pages_by_no.get(pg, "")):
+        fact = _strip_quotes(line)
+        if not _verbatim_span(fact, pages_by_no.get(pg, "")):
             return False, (f"fact line not found verbatim on p{pg}: "
                             f"{line[:70]!r}...")
     return True, ""
+
+
+def plan_tags(n, seed, tags_arg=None):
+    """Content-tag assignment for a --query-type run.
+
+    Default: round-robin over the four tags (shuffled). With --tags, cycles
+    through the given tags instead -- for topping up specific thin cells
+    (e.g. --tags policy,aggregation). Pure function -- unit-tested.
+    """
+    if tags_arg:
+        cycle = [t.strip() for t in tags_arg.split(",") if t.strip()]
+        if not cycle:
+            sys.exit("--tags must list at least one content tag")
+        for t in cycle:
+            if t not in CONTENT_TAGS:
+                sys.exit(f"--tags: unknown content tag {t!r} "
+                         f"(choose from {', '.join(CONTENT_TAGS)})")
+        return [cycle[i % len(cycle)] for i in range(n)]
+    tags = [CONTENT_TAGS[i % len(CONTENT_TAGS)] for i in range(n)]
+    rng = random.Random(seed + 1)
+    rng.shuffle(tags)
+    return tags
 
 
 def _tokens(text):
@@ -407,6 +441,10 @@ def main(argv=None):
                     help="append to an existing --out file (topping up a "
                          "short batch) instead of overwriting; ids are "
                          "renumbered across the merged list")
+    ap.add_argument("--tags", default=None,
+                    help="comma-separated content tags for a --query-type "
+                         "run (cycles if fewer than n), e.g. --tags "
+                         "policy,aggregation to top up thin cells")
     args = ap.parse_args(argv)
 
     yaml_mod = _require_yaml()
@@ -417,10 +455,8 @@ def main(argv=None):
 
     plan = build_plan(args.n, args.seed)
     if args.query_type:  # regenerate one stratum only
-        tags = [CONTENT_TAGS[i % len(CONTENT_TAGS)] for i in range(args.n)]
-        rng2 = random.Random(args.seed + 1)
-        rng2.shuffle(tags)
-        plan = [(args.query_type, t) for t in tags]
+        plan = [(args.query_type, t)
+                for t in plan_tags(args.n, args.seed, args.tags)]
     questions = []
     for i, (query_type, tag) in enumerate(plan, 1):
         pool = table_pages if (tag == "table" and table_pages) else pages

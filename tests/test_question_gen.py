@@ -14,8 +14,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from question_gen import (append_questions, build_prompt_blocks, check_multihop,
-                          pick_related_page)
+from question_gen import (_strip_quotes, append_questions, build_prompt_blocks,
+                          check_multihop, pick_related_page, plan_tags)
 
 
 def _page(no, text):
@@ -154,6 +154,46 @@ class TestAppendQuestions(unittest.TestCase):
                 p, [{"id": "q009", "query_type": "multi_hop"}], yaml)
             self.assertEqual(len(merged), 1)
             self.assertEqual(merged[0]["id"], "q001")  # renumbered
+
+
+class TestStripQuotes(unittest.TestCase):
+    def test_strips_decorative_quotes(self):
+        self.assertEqual(_strip_quotes('"hello"'), "hello")
+        self.assertEqual(_strip_quotes("'hello'"), "hello")
+        self.assertEqual(_strip_quotes("“hello”"), "hello")
+        self.assertEqual(_strip_quotes("\"mismatched'"), "mismatched")
+        self.assertEqual(_strip_quotes("hello"), "hello")
+
+    def test_quote_wrapped_fact_passes_gate(self):
+        # the p2912/p871 failure mode: model wraps verbatim facts in quotes
+        pages = {100: PAGE_A["text"], 200: PAGE_B["text"]}
+        q = _mhq(
+            expected_answer=
+                '"If CALL is executed in a transaction block, then the '
+                'called procedure cannot execute transaction control '
+                'statements."\n'
+                "'A procedure invoked by CALL runs inside the caller's "
+                "transaction unless it uses transaction control "
+                "statements.'",
+            fact_pages=[100, 200])
+        ok, reason = check_multihop(q, pages)
+        self.assertTrue(ok, reason)
+
+
+class TestPlanTags(unittest.TestCase):
+    def test_override_cycles(self):
+        self.assertEqual(plan_tags(5, 0, "policy,aggregation"),
+                         ["policy", "aggregation", "policy",
+                          "aggregation", "policy"])
+
+    def test_default_covers_all_tags(self):
+        tags = plan_tags(8, 42)
+        for t in ("lookup", "table", "policy", "aggregation"):
+            self.assertGreaterEqual(tags.count(t), 2)
+
+    def test_unknown_tag_exits(self):
+        with self.assertRaises(SystemExit):
+            plan_tags(2, 0, "bogus")
 
 
 class TestPickRelatedPage(unittest.TestCase):

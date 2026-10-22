@@ -102,8 +102,11 @@ page's chunks 0). Three backend-side fixes, all in question_gen.py:
   alone = wrong").
 - **Automated gate**: check_multihop() rejects any multi_hop question whose
   expected_answer lacks one verbatim fact line per page (up to 3 attempts,
-  then skip). The integrity check "multi_hop source page with zero graded
-  chunks" doubles as a detector for this failure mode.
+  then skip). The verbatim check is quote-tolerant: the model often wraps
+  facts in decorative quotation marks (`"fact..."`), which are stripped
+  before matching — the content must still be verbatim. The integrity check
+  "multi_hop source page with zero graded chunks" doubles as a detector for
+  this failure mode.
 ```
 
 ## Backend wiring notes
