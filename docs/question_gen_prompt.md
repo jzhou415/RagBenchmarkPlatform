@@ -72,12 +72,17 @@ Rules:
    the page — copy the value verbatim. If the answer sits in a table, tag
    content_tags: [table] and give the cell value plus its row/column labels.
 6. Do NOT ask about page numbers, figure captions, or formatting artifacts.
-7. Output YAML only, matching this shape:
+7. Output YAML only, matching this shape. expected_answer MUST be a YAML
+   literal block scalar (|) as shown — never double-quote it: answers may
+   contain backslashes (regex patterns, Windows paths) which silently break
+   double-quoted scalars.
 
 - question: "..."
   query_type: {{QUERY_TYPE}}
   content_tags: [{{TAGS}}]
-  expected_answer: "..."   # verbatim from the page(s); used for grade-3 pre-marking
+  expected_answer: |
+    ...verbatim answer text, exactly as it appears on the page...
+    ...(multi_hop: fact_A on line 1, fact_B on line 2)...
   fact_pages: [{{PAGE_REF}}, {{PAGE_REF_2}}]   # multi_hop only: page per expected_answer line, same order
   provenance: auto
 

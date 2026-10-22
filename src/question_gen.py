@@ -86,18 +86,21 @@ Rules:
 3. paraphrase: restate the fact WITHOUT reusing its distinctive terms --
    a reader should not be able to match the question to the page by keyword.
 4. multi_hop: follow the multi-hop procedure above. The two expected_answer
-   lines must each be copied VERBATIM from their page -- no rewording.
+   lines must each be copied VERBATIM from their page -- no rewording, no
+   compression into a single line.
 5. For exact_term and paraphrase: write the expected_answer as it appears on
    the page -- copy the value verbatim. If the answer sits in a table, use
    content_tags: [table] and give the cell value plus its row/column labels.
 6. Do NOT ask about page numbers, figure captions, or formatting artifacts.
-7. Output YAML only, matching this shape:
+7. Output YAML only, matching this shape. expected_answer MUST be a YAML
+   literal block scalar (|) as shown -- never double-quote it: answers may
+   contain backslashes (regex patterns, Windows paths) which silently break
+   double-quoted scalars.
 
 - question: "..."
   query_type: {query_type}
   content_tags: [{tags}]
-  expected_answer: "..."   # verbatim from the page(s); used for grade-3 pre-marking
-{fact_pages_line}  provenance: auto
+{expected_answer_block}{fact_pages_line}  provenance: auto
 
 Do not add commentary. Do not wrap the output in code fences.
 """
@@ -242,9 +245,54 @@ def pick_related_page(page, pages, rng, top_k=20):
     return rng.choice(cands)
 
 
-# ---------------------------------------------------------------------------
-# Generation: one LLM call per planned slot
-# ---------------------------------------------------------------------------
+def build_prompt_blocks(page_no, page2_no, multihop):
+    """Render the conditional prompt fragments. Pure function -- tested."""
+    multihop_block = ""
+    fact_pages_line = ""
+    if multihop and page2_no is not None:
+        multihop_block = MULTIHOP_BLOCK.format(page_ref=page_no,
+                                               page2_ref=page2_no)
+        fact_pages_line = (f"  fact_pages: [{page_no}, {page2_no}]   "
+                           f"# multi_hop only: page per expected_answer "
+                           f"line, same order\n")
+        expected_answer_block = (
+            "  expected_answer: |   # literal block: one verbatim fact "
+            "per line\n"
+            f"    <fact_A: verbatim span from page {page_no}>\n"
+            f"    <fact_B: verbatim span from page {page2_no}>\n")
+    else:
+        expected_answer_block = (
+            "  expected_answer: |   # literal block scalar -- never "
+            "double-quote\n"
+            "    <verbatim answer text, exactly as it appears on the "
+            "page>\n")
+    return multihop_block, fact_pages_line, expected_answer_block
+
+
+def append_questions(out_path, new_questions, yaml_mod):
+    """Append new questions to an existing draft file, renumbering ids.
+
+    Used for topping up a short batch (--append) without a merge step.
+    Returns the merged list. Pure file op -- unit-tested.
+    """
+    header = []
+    existing = []
+    try:
+        with open(out_path, encoding="utf-8") as f:
+            raw = f.read()
+        header = [l for l in raw.splitlines() if l.startswith("#")]
+        data = yaml_mod.safe_load(raw)
+        existing = list(data) if data else []
+    except FileNotFoundError:
+        pass
+    merged = existing + new_questions
+    for i, q in enumerate(merged, 1):
+        q["id"] = f"q{i:03d}"
+    with open(out_path, "w", encoding="utf-8") as f:
+        if header:
+            f.write("\n".join(header) + "\n")
+        yaml_mod.safe_dump(merged, f, allow_unicode=True, sort_keys=False)
+    return merged
 
 MAX_PAGE_CHARS = 8000
 
@@ -253,23 +301,22 @@ def _clip(text):
     return text[:MAX_PAGE_CHARS]
 
 
+# ---------------------------------------------------------------------------
+# Generation: one LLM call per planned slot
+# ---------------------------------------------------------------------------
+
 MULTIHOP_ATTEMPTS = 3
 
 
 def gen_one(client, model, yaml_mod, page, page2, query_type, tag):
     multihop = query_type == "multi_hop"
     page2_block = ""
-    multihop_block = ""
-    fact_pages_line = ""
     if page2 is not None:
         page2_block = (f"\nSecond page (page {page2['page_no']}):\n"
                        f"{_clip(page2['text'])}\n")
-    if multihop and page2 is not None:
-        multihop_block = MULTIHOP_BLOCK.format(page_ref=page["page_no"],
-                                               page2_ref=page2["page_no"])
-        fact_pages_line = (f"  fact_pages: [{page['page_no']}, "
-                           f"{page2['page_no']}]   # multi_hop only: page "
-                           f"per expected_answer line, same order\n")
+    multihop_block, fact_pages_line, expected_answer_block = \
+        build_prompt_blocks(page["page_no"],
+                            page2["page_no"] if page2 else None, multihop)
     prompt = PROMPT_TEMPLATE.format(
         page_ref=page["page_no"],
         page_text=_clip(page["text"]),
@@ -278,6 +325,7 @@ def gen_one(client, model, yaml_mod, page, page2, query_type, tag):
         tags=tag,
         multihop_block=multihop_block,
         fact_pages_line=fact_pages_line,
+        expected_answer_block=expected_answer_block,
     )
     pages_by_no = {page["page_no"]: page["text"]}
     if page2 is not None:
@@ -312,8 +360,11 @@ def gen_one(client, model, yaml_mod, page, page2, query_type, tag):
                 if not ok:
                     last_err = f"multi_hop check failed: {reason}"
                     feedback = (f"\n\nYour previous output FAILED this "
-                                f"automated check: {reason}\nFix it and "
-                                f"output the corrected YAML only.")
+                                f"automated check: {reason}\nFix it: use a "
+                                f"literal block scalar (|) for "
+                                f"expected_answer with one verbatim fact "
+                                f"per line, then output the corrected YAML "
+                                f"only.")
                     continue
             return q
         except Exception as e:  # noqa: BLE001 -- retry then skip
@@ -352,6 +403,10 @@ def main(argv=None):
                          "one stratum, e.g. multi_hop)")
     ap.add_argument("--id-offset", type=int, default=0,
                     help="start question ids at q{offset+1:03d}")
+    ap.add_argument("--append", action="store_true",
+                    help="append to an existing --out file (topping up a "
+                         "short batch) instead of overwriting; ids are "
+                         "renumbered across the merged list")
     args = ap.parse_args(argv)
 
     yaml_mod = _require_yaml()
@@ -384,15 +439,22 @@ def main(argv=None):
             q["id"] = f"q{i + args.id_offset:03d}"
             questions.append(q)
 
-    with open(args.out, "w", encoding="utf-8") as f:
-        f.write("# Draft golden-set questions -- generated by question_gen.py\n"
-                f"# model={args.model} seed={args.seed} "
-                f"pages={args.pages}"
-                + (f" query_type={args.query_type}" if args.query_type else "")
-                + "\n")
-        yaml_mod.safe_dump(questions, f, allow_unicode=True, sort_keys=False)
-
-    print(f"\nwrote {len(questions)}/{args.n} questions -> {args.out}")
+    if args.append:
+        questions = append_questions(args.out, questions, yaml_mod)
+        print(f"\nwrote {len(questions)} questions total -> {args.out} "
+              f"(appended {args.n} new)")
+    else:
+        with open(args.out, "w", encoding="utf-8") as f:
+            f.write("# Draft golden-set questions -- generated by "
+                    "question_gen.py\n"
+                    f"# model={args.model} seed={args.seed} "
+                    f"pages={args.pages}"
+                    + (f" query_type={args.query_type}"
+                       if args.query_type else "")
+                    + "\n")
+            yaml_mod.safe_dump(questions, f, allow_unicode=True,
+                               sort_keys=False)
+        print(f"\nwrote {len(questions)}/{args.n} questions -> {args.out}")
     print_coverage(questions)
 
 

@@ -14,7 +14,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from question_gen import check_multihop, pick_related_page
+from question_gen import (append_questions, build_prompt_blocks, check_multihop,
+                          pick_related_page)
 
 
 def _page(no, text):
@@ -99,6 +100,60 @@ class TestCheckMultihop(unittest.TestCase):
              "expected_answer": "anything"}
         ok, _ = check_multihop(q, self.pages)
         self.assertTrue(ok)
+
+
+class TestBuildPromptBlocks(unittest.TestCase):
+    def test_multihop_shape_uses_block_scalar_and_fact_pages(self):
+        mb, fpl, eab = build_prompt_blocks(2352, 1770, True)
+        self.assertIn("expected_answer: |", eab)
+        self.assertIn("fact_A", eab)
+        self.assertIn("fact_B", eab)
+        self.assertIn("fact_pages: [2352, 1770]", fpl)
+        self.assertIn("Multi-hop procedure", mb)
+
+    def test_singlehop_shape_uses_block_scalar_no_fact_pages(self):
+        mb, fpl, eab = build_prompt_blocks(100, None, False)
+        self.assertIn("expected_answer: |", eab)
+        self.assertEqual(mb, "")
+        self.assertEqual(fpl, "")
+        # no double-quoted scalar in the shape (backslash-escape hazard)
+        self.assertNotIn('expected_answer: "', eab)
+
+
+class TestAppendQuestions(unittest.TestCase):
+    def _write(self, path, header, questions):
+        with open(path, "w", encoding="utf-8") as f:
+            for h in header:
+                f.write(h + "\n")
+            import yaml
+            yaml.safe_dump(questions, f, allow_unicode=True,
+                           sort_keys=False)
+
+    def test_appends_and_renumbers(self):
+        import tempfile, yaml
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "draft.yaml")
+            self._write(p, ["# header kept"],
+                        [{"id": "q001", "query_type": "exact_term"},
+                         {"id": "q002", "query_type": "paraphrase"}])
+            merged = append_questions(
+                p, [{"id": "q001", "query_type": "multi_hop"}], yaml)
+            self.assertEqual(len(merged), 3)
+            self.assertEqual([q["id"] for q in merged],
+                             ["q001", "q002", "q003"])
+            self.assertEqual(merged[2]["query_type"], "multi_hop")
+            raw = open(p, encoding="utf-8").read()
+            self.assertTrue(raw.startswith("# header kept"))
+            self.assertEqual(len(yaml.safe_load(raw)), 3)
+
+    def test_append_to_missing_file_writes_fresh(self):
+        import tempfile, yaml
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "new.yaml")
+            merged = append_questions(
+                p, [{"id": "q009", "query_type": "multi_hop"}], yaml)
+            self.assertEqual(len(merged), 1)
+            self.assertEqual(merged[0]["id"], "q001")  # renumbered
 
 
 class TestPickRelatedPage(unittest.TestCase):
