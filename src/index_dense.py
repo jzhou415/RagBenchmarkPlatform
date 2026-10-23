@@ -39,6 +39,9 @@ import yaml
 
 EMBED_MODEL = "text-embedding-3-small"
 EMBED_BATCH = 100
+# Chroma rejects a single add() over its max batch size (observed 5461);
+# stay comfortably under it.
+ADD_BATCH = 5000
 
 
 def make_client():
@@ -95,11 +98,14 @@ def build_dense_index(chunks, persist_dir, collection_name, vectors):
     client = chromadb.PersistentClient(path=persist_dir)
     col = client.get_or_create_collection(
         name=collection_name, metadata={"hnsw:space": "cosine"})
-    col.add(ids=[c["chunk_id"] for c in chunks],
-            documents=[c["text"] for c in chunks],
-            metadatas=[{"page_no": c["page_no"],
-                        "section": c.get("section", "")} for c in chunks],
-            embeddings=vectors)
+    ids = [c["chunk_id"] for c in chunks]
+    docs = [c["text"] for c in chunks]
+    metas = [{"page_no": c["page_no"], "section": c.get("section", "")}
+             for c in chunks]
+    for start in range(0, len(chunks), ADD_BATCH):
+        end = start + ADD_BATCH
+        col.add(ids=ids[start:end], documents=docs[start:end],
+                metadatas=metas[start:end], embeddings=vectors[start:end])
     return col
 
 

@@ -67,6 +67,30 @@ class TestDenseIndex(unittest.TestCase):
                 build_dense_index(chunks, persist, "chunks_test",
                                   fake_vectors())
 
+    def test_add_is_batched(self):
+        # Chroma caps a single add() batch; build_dense_index must split
+        # large adds (observed: 11198 chunks > max 5461).
+        from src import index_dense
+        chunks = [
+            {"chunk_id": f"p0100_c{i:02d}", "page_no": 100, "section": "S",
+             "text": f"chunk number {i} about shared_buffers",
+             "char_count": 30}
+            for i in range(5)
+        ]
+        vecs = [[float(i == j) for j in range(5)] for i in range(5)]
+        old_batch, index_dense.ADD_BATCH = index_dense.ADD_BATCH, 2
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                persist = os.path.join(td, "dense_batched")
+                col = build_dense_index(chunks, persist, "chunks_batched",
+                                        vecs)
+                self.assertEqual(col.count(), 5)
+                hits = query_dense(persist, "chunks_batched",
+                                   [0.0, 0.0, 0.0, 0.0, 1.0], top_k=1)
+                self.assertEqual(hits[0][0], "p0100_c04")
+        finally:
+            index_dense.ADD_BATCH = old_batch
+
 
 if __name__ == "__main__":
     unittest.main()
