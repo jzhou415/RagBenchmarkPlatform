@@ -13,8 +13,9 @@ chromadb
 rank-bm25
 numpy
 
+# reranking (step 10)
+sentence-transformers   # local cross-encoder (default)
+cohere                  # Cohere Rerank API (alternative)
+
 # eval / config
 pyyaml
-
-# optional: local cross-encoder reranker (uncomment if needed)
-# sentence-transformers
