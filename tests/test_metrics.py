@@ -142,5 +142,109 @@ class TestLatency(unittest.TestCase):
         self.assertEqual(stats["n"], 0)
 
 
+GOLDEN_YAML = """\
+schema_version: "1.1"
+corpus: test
+ingestion:
+  config_hash: abc
+questions:
+  - id: q001
+    split: dev
+    question: What is X?
+    query_type: exact_term
+    content_tags: [lookup]
+    expected_answer: X is Y.
+    ground_truth:
+      - chunk_id: p1_c00
+        page: 1
+        relevance: 3
+      - chunk_id: p1_c01
+        page: 1
+        relevance: 1
+  - id: q002
+    split: dev
+    question: What is Z?
+    query_type: paraphrase
+    content_tags: [lookup]
+    expected_answer: Z is W.
+    ground_truth:
+      - chunk_id: p2_c00
+        page: 2
+        relevance: 2
+"""
+
+
+class TestGoldenSetGroundTruth(unittest.TestCase):
+    def _write(self, directory, name, text):
+        path = os.path.join(directory, name)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return path
+
+    def test_load_ground_truth_from_yaml(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(d, "golden.yaml", GOLDEN_YAML)
+            self.assertEqual(mt.load_ground_truth(path, "q001"),
+                             {"p1_c00": 3, "p1_c01": 1})
+            self.assertEqual(mt.load_ground_truth(path, "q002"),
+                             {"p2_c00": 2})
+
+    def test_load_ground_truth_missing_question_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write(d, "golden.yaml", GOLDEN_YAML)
+            with self.assertRaises(ValueError):
+                mt.load_ground_truth(path, "q999")
+
+    def _run_cli(self, argv):
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = mt.main(argv)
+        return code, buf.getvalue()
+
+    def test_cli_golden_set_matches_ground_truth_path(self):
+        ranked = json.dumps([{"chunk_id": "p1_c00", "score": 0.9},
+                             {"chunk_id": "zz", "score": 0.1}])
+        with tempfile.TemporaryDirectory() as d:
+            ranked_path = self._write(d, "ranked.json", ranked)
+            golden_path = self._write(d, "golden.yaml", GOLDEN_YAML)
+            gt_path = self._write(d, "gt.json",
+                                  json.dumps({"p1_c00": 3, "p1_c01": 1}))
+            code_gs, out_gs = self._run_cli(
+                ["--ranked", ranked_path, "--golden-set", golden_path,
+                 "--question-id", "q001"])
+            code_gt, out_gt = self._run_cli(
+                ["--ranked", ranked_path, "--ground-truth", gt_path])
+            self.assertEqual(code_gs, 0)
+            self.assertEqual(out_gs, out_gt)
+            self.assertIn("hit@3", out_gs)
+
+    def test_cli_flag_validation(self):
+        with tempfile.TemporaryDirectory() as d:
+            ranked_path = self._write(d, "ranked.json", "[]")
+            golden_path = self._write(d, "golden.yaml", GOLDEN_YAML)
+            gt_path = self._write(d, "gt.json", "{}")
+            base = ["--ranked", ranked_path]
+            # both truth sources
+            with self.assertRaises(SystemExit):
+                self._run_cli(base + ["--ground-truth", gt_path,
+                                      "--golden-set", golden_path,
+                                      "--question-id", "q001"])
+            # neither truth source
+            with self.assertRaises(SystemExit):
+                self._run_cli(base)
+            # golden-set without question-id
+            with self.assertRaises(SystemExit):
+                self._run_cli(base + ["--golden-set", golden_path])
+            # question-id without golden-set
+            with self.assertRaises(SystemExit):
+                self._run_cli(base + ["--question-id", "q001"])
+            # unknown question id fails loudly, not as measured zeros
+            with self.assertRaises(SystemExit):
+                self._run_cli(base + ["--golden-set", golden_path,
+                                      "--question-id", "q999"])
+
+
 if __name__ == "__main__":
     unittest.main()

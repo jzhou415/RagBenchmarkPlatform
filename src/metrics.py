@@ -47,11 +47,17 @@ CLI (single-question scoring, ad-hoc use):
         --ks 3,5,10
     ranked.json: [{"chunk_id": ..., "score": ...}] or ["chunk_id", ...]
     gt.json: {"chunk_id": relevance, ...}
+    or read the truth straight from the golden file (no hand copy):
+    python metrics.py --ranked ranked.json \
+        --golden-set golden_question_held_out.yaml --question-id q042
+    --ground-truth and --golden-set are mutually exclusive.
 """
 import argparse
 import json
 import math
 import sys
+
+import yaml
 
 
 def _dedup_ids(ranked):
@@ -202,19 +208,54 @@ def _load_ranked(path):
     return ranked
 
 
+def load_ground_truth(golden_path, question_id):
+    """Ground truth for one question from a golden-set YAML file.
+
+    Returns {chunk_id: relevance}, the shape evaluate_question takes
+    (the YAML's per-entry page is dropped -- metrics need only the
+    chunk id and its grade). Raises ValueError if the question id is
+    not in the file, so a mistyped id fails loudly instead of scoring
+    against an empty truth (which would read as a measured zero).
+    Step 12 imports this rather than writing a second parser.
+    """
+    with open(golden_path, encoding="utf-8") as f:
+        golden = yaml.safe_load(f) or {}
+    for q in golden.get("questions", []):
+        if q.get("id") == question_id:
+            return {g["chunk_id"]: g["relevance"]
+                    for g in q.get("ground_truth", [])}
+    raise ValueError(f"question {question_id!r} not found in "
+                     f"{golden_path}")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description="score one ranked list against a golden set (step 11)")
     ap.add_argument("--ranked", required=True,
                     help='JSON list of {"chunk_id": ..., "score": ...} '
                          'or plain chunk_id strings')
-    ap.add_argument("--ground-truth", required=True,
+    ap.add_argument("--ground-truth", default=None,
                     help='JSON object {"chunk_id": relevance}')
+    ap.add_argument("--golden-set", default=None,
+                    help="golden-set YAML file; ground truth is taken "
+                         "from the --question-id entry")
+    ap.add_argument("--question-id", default=None,
+                    help="question id to score (required with "
+                         "--golden-set)")
     ap.add_argument("--ks", default="3,5,10",
                     help="comma-separated k values (default 3,5,10)")
     ap.add_argument("--out", default=None,
                     help="write the metrics JSON here")
     args = ap.parse_args(argv)
+
+    if args.ground_truth and args.golden_set:
+        ap.error("--ground-truth and --golden-set are mutually exclusive")
+    if args.golden_set and not args.question_id:
+        ap.error("--golden-set requires --question-id")
+    if args.question_id and not args.golden_set:
+        ap.error("--question-id requires --golden-set")
+    if not args.ground_truth and not args.golden_set:
+        ap.error("need --ground-truth or --golden-set")
 
     try:
         ks = tuple(int(x) for x in args.ks.split(",") if x.strip())
@@ -224,8 +265,15 @@ def main(argv=None):
         sys.exit("--ks must list at least one k")
 
     ranked = _load_ranked(args.ranked)
-    with open(args.ground_truth, encoding="utf-8") as f:
-        ground_truth = json.load(f)
+    if args.golden_set:
+        try:
+            ground_truth = load_ground_truth(args.golden_set,
+                                             args.question_id)
+        except ValueError as e:
+            sys.exit(str(e))
+    else:
+        with open(args.ground_truth, encoding="utf-8") as f:
+            ground_truth = json.load(f)
     result = evaluate_question(ranked, ground_truth, ks)
     for key in sorted(result):
         print(f"{key}  {result[key]:.4f}")
