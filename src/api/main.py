@@ -2,7 +2,7 @@
 """
 api/main.py -- step 8: FastAPI backend for the Data Setup pipeline.
 
-One endpoint per pipeline stage (each runs its src/*.py script as a
+One endpoint per pipeline stage (each runs its src/*.py module as a
 background subprocess and reports progress), plus a health check.
 
 Endpoints:
@@ -95,16 +95,37 @@ def args_to_cli(args: dict) -> list:
     return cli
 
 
+def stage_command(script_path):
+    """How to execute a stage script (argv prefix, before CLI args).
+
+    Scripts inside the repo run as modules (python -m src.parse):
+    parse.py uses a relative import (from .config import ...), which
+    only works under module execution, and chunk.py already supports
+    both modes. Anything else (ad-hoc scripts outside the repo) runs
+    as a plain file, as before.
+    """
+    script = Path(script_path)
+    try:
+        rel = script.resolve().relative_to(ROOT.resolve())
+    except ValueError:
+        return [sys.executable, str(script)]
+    if rel.suffix != ".py":
+        return [sys.executable, str(script)]
+    module = ".".join(rel.with_suffix("").parts)
+    return [sys.executable, "-m", module]
+
+
 def _run_stage(run_id: str, stage_id: str, cli_args: list):
     script = ROOT / STAGES[stage_id]["script"]
+    cmd = stage_command(script)
     log_path = RUNS_DIR / f"{run_id}.log"
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     try:
         with open(log_path, "w", encoding="utf-8") as log:
-            log.write(f"$ {' '.join([sys.executable, str(script)] + cli_args)}\n")
+            log.write(f"$ {' '.join(cmd + cli_args)}\n")
             log.flush()
             proc = subprocess.Popen(
-                [sys.executable, str(script)] + cli_args,
+                cmd + cli_args,
                 cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT,
                 text=True)
         returncode = proc.wait()
