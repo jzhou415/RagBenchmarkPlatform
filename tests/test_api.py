@@ -29,8 +29,9 @@ class TestHealthAndStages(unittest.TestCase):
         r = make_client().get("/stages")
         self.assertEqual(r.status_code, 200)
         ids = [s["id"] for s in r.json()]
-        for expected in ("parse", "chunk", "question-gen", "auto-map",
-                         "validate", "index-bm25", "index-dense"):
+        for expected in ("parse", "corpus-split", "chunk", "question-gen",
+                         "auto-map", "validate", "index-bm25",
+                         "index-dense"):
             self.assertIn(expected, ids)
 
     def test_unknown_stage_404(self):

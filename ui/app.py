@@ -141,8 +141,20 @@ def describe_api_error(err):
 # index-dense reuses that file via its --embed-cache flag instead of
 # re-embedding -- vectors are paid for once.
 
+# Base chain. build_chain() inserts "corpus-split" after parse when the
+# question pool is split: the split files feed question-gen ONLY --
+# chunk, auto-map and the indexes still use the full pages/manifest,
+# so the retrieval corpus stays full-corpus either way.
 BUILD_STAGES = ("parse", "chunk", "question-gen", "auto-map", "validate",
                 "index-bm25", "index-dense")
+
+
+def build_chain(pool):
+    """Ordered stages for one build. pool: "full" or "split"."""
+    stages = list(BUILD_STAGES)
+    if pool == "split":
+        stages.insert(1, "corpus-split")
+    return stages
 
 
 def derive_paths(indexes_dir, golden_dir, split):
@@ -157,6 +169,8 @@ def derive_paths(indexes_dir, golden_dir, split):
     return {
         "parsed_dir": parsed_dir,
         "pages": pages,
+        "pages_dev": os.path.join(golden_dir, "pages_dev.jsonl"),
+        "pages_heldout": os.path.join(golden_dir, "pages_heldout.jsonl"),
         "manifest": manifest,
         "chunk_manifest": chunk_manifest,
         "drafts": drafts,
@@ -178,8 +192,23 @@ def stage_args(stage, p, inputs):
                 "chunk-size": inputs["chunk_size"],
                 "chunk-overlap": inputs["chunk_overlap"]}
     if stage == "question-gen":
-        return {"pages": p["pages"], "out": p["drafts"],
-                "n": inputs["n_questions"]}
+        if inputs["pool"] == "split":
+            pages = (p["pages_dev"] if inputs["split"] == "dev"
+                     else p["pages_heldout"])
+        else:
+            pages = p["pages"]
+        return {"pages": pages, "out": p["drafts"],
+                "n": inputs["n_questions"], "seed": inputs["seed"]}
+    if stage == "corpus-split":
+        args = {"pages": p["pages"], "out-dev": p["pages_dev"],
+                "out-heldout": p["pages_heldout"]}
+        # Never pass an empty list: args_to_cli would emit a bare flag
+        # and argparse would swallow the next flag as its value.
+        if inputs["dev_sections"]:
+            args["dev-section"] = inputs["dev_sections"]
+        if inputs["dev_ranges"]:
+            args["dev-range"] = inputs["dev_ranges"]
+        return args
     if stage == "auto-map":
         return {"questions": p["drafts"], "manifest": p["manifest"],
                 "chunk-manifest": p["chunk_manifest"],
@@ -253,26 +282,65 @@ def data_setup_page(base):
     split = "heldout" if split_label == "held-out" else "dev"
     n_questions = st.number_input("Question count", value=20, min_value=1,
                                   step=1)
+    pool_label = st.selectbox(
+        "Question pool",
+        ["Full corpus", "Split pages (dev / held-out)"],
+        help="Full corpus: question-gen reads all parsed pages. Split "
+             "pages: corpus-split divides them into dev + held-out pools "
+             "(disjoint by page_no) and question-gen reads only the file "
+             "for the selected split. Chunking, auto-map and the indexes "
+             "always use the full corpus.")
+    pool = "split" if pool_label.startswith("Split") else "full"
+    dev_sections = []
+    dev_ranges = []
+    if pool == "split":
+        sections_raw = st.text_input(
+            "Dev sections (comma-separated)", value="",
+            help="Case-insensitive substrings matched against page "
+                 "sections, e.g. SQL Commands, Data Types. A page joins "
+                 "dev if it matches any section or range.")
+        ranges_raw = st.text_input(
+            "Dev page ranges (comma-separated)", value="",
+            help="Inclusive page_no ranges, e.g. 2714-2900. Held-out is "
+                 "the exact complement; overlap is verified by page_no.")
+        dev_sections = [s.strip() for s in sections_raw.split(",")
+                        if s.strip()]
+        dev_ranges = [r.strip() for r in ranges_raw.split(",")
+                      if r.strip()]
+    seed = st.number_input("Question-gen seed", value=42, min_value=0,
+                           step=1,
+                           help="Same seed + same pages file samples the "
+                                "same pages, so use a different seed per "
+                                "split when the pool is shared.")
     st.caption("Backend needs OPENAI_API_KEY in its environment "
                "(question generation, auto-map judging, embeddings).")
 
     inputs = {"doc": doc, "indexes_dir": indexes_dir,
               "golden_dir": golden_dir, "chunk_size": chunk_size,
               "chunk_overlap": chunk_overlap, "split": split,
-              "n_questions": n_questions}
+              "n_questions": n_questions, "pool": pool,
+              "dev_sections": dev_sections, "dev_ranges": dev_ranges,
+              "seed": seed}
     paths = derive_paths(indexes_dir, golden_dir, split)
     with st.expander("Derived build paths"):
         st.json({k: v for k, v in paths.items() if k != "marker"})
 
     build = st.session_state.setdefault("ds_build", {})
-    if st.button("Build", disabled=not doc):
+    pool_invalid = (pool == "split" and not dev_sections
+                    and not dev_ranges)
+    if pool_invalid:
+        st.error("Split pool needs at least one dev section or dev "
+                 "page range (corpus-split would refuse to run).")
+    if st.button("Build", disabled=not doc or pool_invalid):
         build.clear()
+        chain = build_chain(pool)
         build.update({"states": {}, "logs": {}, "paths": paths,
-                      "inputs": inputs, "done": False, "report": None})
+                      "inputs": inputs, "done": False, "report": None,
+                      "chain": chain})
         status_slot = st.empty()
         log_slot = st.empty()
         failed = False
-        for stage in BUILD_STAGES:
+        for stage in chain:
             build["states"][stage] = "running"
             status, full_log = run_stage(
                 base, stage, stage_args(stage, paths, inputs),
@@ -303,7 +371,8 @@ def data_setup_page(base):
     if states:
         st.subheader("Build progress")
         st.dataframe([{"stage": s, "status": states.get(s, "waiting")}
-                      for s in list(BUILD_STAGES) + ["review-report"]
+                      for s in list(build.get("chain", BUILD_STAGES))
+                      + ["review-report"]
                       if s in states], use_container_width=True)
         failed = [s for s, v in states.items()
                   if v in ("failed", "error", "unknown")]

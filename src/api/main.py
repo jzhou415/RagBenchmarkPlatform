@@ -39,6 +39,10 @@ STAGES = {
         "script": "src/parse.py",
         "description": "Docling: PDF -> pages with metadata",
     },
+    "corpus-split": {
+        "script": "src/corpus_split.py",
+        "description": "Split pages into dev + held-out pools (disjoint by page_no)",
+    },
     "chunk": {
         "script": "src/chunk.py",
         "description": "Split pages into per-page chunks -> manifest.jsonl",
