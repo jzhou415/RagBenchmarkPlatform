@@ -147,7 +147,8 @@ def _run_stage(run_id: str, stage_id: str, cli_args: list):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "stages": sorted(STAGES)}
+    return {"status": "ok", "stages": sorted(STAGES),
+            "root": str(ROOT)}
 
 
 @app.get("/stages")

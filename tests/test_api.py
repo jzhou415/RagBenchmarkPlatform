@@ -24,6 +24,7 @@ class TestHealthAndStages(unittest.TestCase):
         body = r.json()
         self.assertEqual(body["status"], "ok")
         self.assertIn("parse", body["stages"])
+        self.assertEqual(body["root"], str(api_main.ROOT))
 
     def test_list_stages(self):
         r = make_client().get("/stages")

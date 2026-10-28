@@ -157,6 +157,17 @@ def build_chain(pool):
     return stages
 
 
+def build_is_stale(build, inputs, paths):
+    """True when a finished build's inputs/paths differ from current.
+
+    Streamlit reruns the page on every widget change but session state
+    persists, so without this the page would keep showing an old
+    build's success after the user edits the inputs.
+    """
+    return bool(build.get("done")) and (
+        build.get("inputs") != inputs or build.get("paths") != paths)
+
+
 def derive_paths(indexes_dir, golden_dir, split):
     """All stage inputs/outputs for one build. split is dev|heldout."""
     parsed_dir = os.path.join(golden_dir, "parsed")
@@ -322,7 +333,7 @@ def data_setup_page(base):
               "dev_sections": dev_sections, "dev_ranges": dev_ranges,
               "seed": seed}
     paths = derive_paths(indexes_dir, golden_dir, split)
-    with st.expander("Derived build paths"):
+    with st.expander("Paths for the current inputs"):
         st.json({k: v for k, v in paths.items() if k != "marker"})
 
     build = st.session_state.setdefault("ds_build", {})
@@ -382,7 +393,18 @@ def data_setup_page(base):
             st.code(build["logs"].get(failed[0], ""))
 
     if build.get("done"):
+        stale = build_is_stale(build, inputs, paths)
         paths = build["paths"]
+        b_inputs = build.get("inputs", {})
+        st.caption(f"Built with: doc={b_inputs.get('doc', '')} | "
+                   f"indexes dir={b_inputs.get('indexes_dir', '')} | "
+                   f"golden dir={b_inputs.get('golden_dir', '')} | "
+                   f"split={b_inputs.get('split', '')} | "
+                   f"pool={b_inputs.get('pool', '')}")
+        if stale:
+            st.warning("Inputs have changed since this build finished -- "
+                       "the progress and review below are from the earlier "
+                       "build. Click Build to run with the current inputs.")
         st.subheader("Review & approve")
         st.caption("Flags are advisory: a flag means look here, never an "
                    "automatic reject. Approval is your call.")
@@ -528,6 +550,8 @@ def main():
     try:
         health = api_get(base, "/health")
         st.sidebar.success(f"API ok: {', '.join(health.get('stages', []))}")
+        if health.get("root"):
+            st.sidebar.caption(f"API root: {health['root']}")
     except Exception as err:  # noqa: BLE001 - health is advisory
         st.sidebar.warning(f"API not reachable: "
                            f"{describe_api_error(err)} -- start it with "

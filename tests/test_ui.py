@@ -111,5 +111,28 @@ class TestStageArgs(unittest.TestCase):
         self.assertEqual(args["dev-range"], ["2714-2900"])
 
 
+class TestBuildIsStale(unittest.TestCase):
+    def test_not_done_never_stale(self):
+        p = app.derive_paths("indexes", "data/golden_set", "dev")
+        self.assertFalse(app.build_is_stale({}, _inputs(), p))
+
+    def test_same_inputs_not_stale(self):
+        p = app.derive_paths("indexes", "data/golden_set", "dev")
+        build = {"done": True, "inputs": _inputs(), "paths": p}
+        self.assertFalse(app.build_is_stale(build, _inputs(), p))
+
+    def test_changed_doc_is_stale(self):
+        p = app.derive_paths("indexes", "data/golden_set", "dev")
+        build = {"done": True, "inputs": _inputs(), "paths": p}
+        self.assertTrue(
+            app.build_is_stale(build, _inputs(doc="other.pdf"), p))
+
+    def test_changed_paths_is_stale(self):
+        p = app.derive_paths("indexes", "data/golden_set", "dev")
+        p2 = app.derive_paths("indexes", "other/golden", "dev")
+        build = {"done": True, "inputs": _inputs(), "paths": p}
+        self.assertTrue(app.build_is_stale(build, _inputs(), p2))
+
+
 if __name__ == "__main__":
     unittest.main()
