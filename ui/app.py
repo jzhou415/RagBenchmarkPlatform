@@ -1,9 +1,25 @@
-"""ui/app.py -- step 13: Streamlit viewer for step-12 eval results.
+"""ui/app.py -- RagBenchmarkPlatform Streamlit UI.
 
-Reads only a step-12 results JSON -- no index, model, or API access.
+Pages (sidebar selector):
+  Data Setup (step 13, new): pick one document, the indexes output dir,
+    and the golden-set output dir, then Build runs the 7 pipeline stages
+    in order through the FastAPI backend, with per-stage progress and a
+    review-and-approve section for the golden set.
+  Evaluation (step 14, placeholder): built by step 14 -- experiment
+    registration, pending -> completed flow, runs through a new FastAPI
+    endpoint. Only approved golden sets will be offered.
+  Results (step 15 target, viewer moved here from the old step-13 app):
+    reads a step-12 results JSON via upload or path. The cross-experiment
+    comparison view is step 15's work.
+
 Run from the repo root: streamlit run ui/app.py
+The API must be running: uvicorn src.api.main:app (from the repo root).
+The UI and the API run on the same machine, so the paths below are local
+paths the backend reads and writes. OPENAI_API_KEY must be set in the
+backend environment (question generation, auto-map judging, embeddings).
 
-The JSON schema it expects is exactly what eval_runner.py writes:
+The JSON schema the Results page expects is exactly what eval_runner.py
+writes:
     run: golden_set, split, n_questions, config_hash,
          indexes {bm25, dense}, reranker, reranker_model,
          candidate_ns, ks, timestamp
@@ -13,9 +29,17 @@ The JSON schema it expects is exactly what eval_runner.py writes:
     by_query_type / by_content_tag: {group: {rung: metrics}}
     latency: {rung: {p50, p95, p99, mean, n}}
 """
+import datetime
 import json
+import os
+import time
+import urllib.error
+import urllib.request
 
 import streamlit as st
+
+# ---------------------------------------------------------------- Results
+# Viewer helpers, unchanged from the old step-13 app.
 
 REQUIRED_KEYS = ("run", "per_question", "mean", "latency")
 METRIC_FAMILIES = ("hit", "recall", "precision", "ndcg")
@@ -68,12 +92,297 @@ def stratified_rows(grouped, ks, metric_key):
     return rows
 
 
-def main():
-    st.title("RagBenchmarkPlatform — Eval Results")
-    st.sidebar.header("Results file")
-    uploaded = st.sidebar.file_uploader("Upload a step-12 results JSON",
-                                        type=["json"])
-    path = st.sidebar.text_input("...or a path to one", value="")
+# ------------------------------------------------------------------- API
+# Minimal stdlib client: the backend is the step-8 FastAPI app.
+
+
+def api_get(base, path, timeout=10):
+    req = urllib.request.Request(base.rstrip("/") + path)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.load(resp)
+
+
+def api_post_run(base, stage_id, args, timeout=10):
+    body = json.dumps({"args": args}).encode("utf-8")
+    req = urllib.request.Request(
+        base.rstrip("/") + f"/stages/{stage_id}/run", data=body,
+        headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.load(resp)["run_id"]
+
+
+def api_run_status(base, run_id, timeout=10):
+    return api_get(base, f"/runs/{run_id}", timeout=timeout)
+
+
+def api_run_log(base, run_id, tail=None, timeout=10):
+    path = f"/runs/{run_id}/log"
+    if tail is not None:
+        path += f"?tail={tail}"
+    return api_get(base, path, timeout=timeout).get("log", "")
+
+
+def describe_api_error(err):
+    """One readable line for a urllib failure."""
+    if isinstance(err, urllib.error.HTTPError):
+        try:
+            detail = err.read().decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001 - error path, keep it short
+            detail = ""
+        return f"HTTP {err.code}: {detail or err.reason}"
+    return f"{type(err).__name__}: {err}"
+
+
+# ------------------------------------------------------------ Data Setup
+# Build chain: the 7 step-8 stages in pipeline order. All intermediate
+# paths derive from the two output dirs the user picks, so a build is
+# one self-contained directory pair. The embedding cache is shared:
+# auto-map embeds the corpus and caches chunk_embeddings.json, and
+# index-dense reuses that file via its --embed-cache flag instead of
+# re-embedding -- vectors are paid for once.
+
+BUILD_STAGES = ("parse", "chunk", "question-gen", "auto-map", "validate",
+                "index-bm25", "index-dense")
+
+
+def derive_paths(indexes_dir, golden_dir, split):
+    """All stage inputs/outputs for one build. split is dev|heldout."""
+    parsed_dir = os.path.join(golden_dir, "parsed")
+    pages = os.path.join(parsed_dir, "pages.jsonl")
+    manifest = os.path.join(golden_dir, "manifest.jsonl")
+    chunk_manifest = os.path.join(golden_dir, "chunk_manifest.yaml")
+    drafts = os.path.join(golden_dir, "drafts.yaml")
+    golden = os.path.join(golden_dir, f"golden_{split}.yaml")
+    cache_dir = os.path.join(indexes_dir, "embed_cache")
+    return {
+        "parsed_dir": parsed_dir,
+        "pages": pages,
+        "manifest": manifest,
+        "chunk_manifest": chunk_manifest,
+        "drafts": drafts,
+        "golden": golden,
+        "review_queue": os.path.join(golden_dir, "review_queue.yaml"),
+        "review_report": os.path.join(golden_dir, "review_report.json"),
+        "cache_dir": cache_dir,
+        "cache_file": os.path.join(cache_dir, "chunk_embeddings.json"),
+        "marker": golden + ".approved",
+    }
+
+
+def stage_args(stage, p, inputs):
+    """CLI args (as an args dict) for one stage of the build."""
+    if stage == "parse":
+        return {"pdf": inputs["doc"], "out": p["parsed_dir"]}
+    if stage == "chunk":
+        return {"pages": p["pages"], "out": p["manifest"],
+                "chunk-size": inputs["chunk_size"],
+                "chunk-overlap": inputs["chunk_overlap"]}
+    if stage == "question-gen":
+        return {"pages": p["pages"], "out": p["drafts"],
+                "n": inputs["n_questions"]}
+    if stage == "auto-map":
+        return {"questions": p["drafts"], "manifest": p["manifest"],
+                "chunk-manifest": p["chunk_manifest"],
+                "split": inputs["split"], "out": p["golden"],
+                "review-queue": p["review_queue"], "cache": p["cache_dir"]}
+    if stage == "validate":
+        return {"golden": p["golden"], "manifest": p["manifest"],
+                "chunk-manifest": p["chunk_manifest"]}
+    if stage == "index-bm25":
+        return {"manifest": p["manifest"],
+                "chunk-manifest": p["chunk_manifest"],
+                "out-dir": inputs["indexes_dir"]}
+    if stage == "index-dense":
+        return {"manifest": p["manifest"],
+                "chunk-manifest": p["chunk_manifest"],
+                "out-dir": inputs["indexes_dir"],
+                "embed-cache": p["cache_file"]}
+    if stage == "review-report":
+        return {"golden": p["golden"], "manifest": p["manifest"],
+                "cache": p["cache_dir"], "out": p["review_report"]}
+    raise ValueError(f"unknown stage: {stage}")
+
+
+def run_stage(base, stage, args, status_slot, log_slot):
+    """POST a stage run and poll until it finishes. Returns
+    (status, full_log). Scripts emit no percentages, so progress is the
+    stage state plus a live log tail -- never a % bar."""
+    try:
+        run_id = api_post_run(base, stage, args)
+    except Exception as err:  # noqa: BLE001 - surfaced, chain stops
+        return "error", describe_api_error(err)
+    status = "running"
+    log = ""
+    while status == "running":
+        time.sleep(2)
+        try:
+            status = api_run_status(base, run_id).get("status", "unknown")
+            log = api_run_log(base, run_id, tail=15)
+        except Exception as err:  # noqa: BLE001 - surfaced, chain stops
+            return "error", describe_api_error(err)
+        status_slot.write(f"**{stage}**: {status}")
+        log_slot.code(log or "(no log output yet)")
+    try:
+        full_log = api_run_log(base, run_id)
+    except Exception:  # noqa: BLE001 - tail already shown
+        full_log = log
+    return status, full_log
+
+
+def data_setup_page(base):
+    st.header("Data Setup")
+    st.caption("Builds indexes + golden-set questions for one document, "
+               "through the FastAPI backend. One document per build.")
+    doc = st.text_input("Document path", value="",
+                        help="Local path to the PDF, as the backend sees "
+                             "it (the UI and API run on the same machine).")
+    indexes_dir = st.text_input("Indexes output dir", value="indexes")
+    golden_dir = st.text_input("Golden-set output dir",
+                               value=os.path.join("data", "golden_set"),
+                               help="Drafts, the golden YAML, the review "
+                                    "queue and the report land here.")
+    chunk_size = st.number_input("Chunk size", value=1000, min_value=1,
+                                 step=100)
+    chunk_overlap = st.number_input("Chunk overlap", value=200, min_value=0,
+                                    step=50)
+    strategy = st.selectbox("Chunk strategy", ["recursive"],
+                            help="Recursive is the only strategy "
+                                 "implemented; other strategies need new "
+                                 "chunker code.")
+    split_label = st.selectbox("Split", ["dev", "held-out"])
+    split = "heldout" if split_label == "held-out" else "dev"
+    n_questions = st.number_input("Question count", value=20, min_value=1,
+                                  step=1)
+    st.caption("Backend needs OPENAI_API_KEY in its environment "
+               "(question generation, auto-map judging, embeddings).")
+
+    inputs = {"doc": doc, "indexes_dir": indexes_dir,
+              "golden_dir": golden_dir, "chunk_size": chunk_size,
+              "chunk_overlap": chunk_overlap, "split": split,
+              "n_questions": n_questions}
+    paths = derive_paths(indexes_dir, golden_dir, split)
+    with st.expander("Derived build paths"):
+        st.json({k: v for k, v in paths.items() if k != "marker"})
+
+    build = st.session_state.setdefault("ds_build", {})
+    if st.button("Build", disabled=not doc):
+        build.clear()
+        build.update({"states": {}, "logs": {}, "paths": paths,
+                      "inputs": inputs, "done": False, "report": None})
+        status_slot = st.empty()
+        log_slot = st.empty()
+        failed = False
+        for stage in BUILD_STAGES:
+            build["states"][stage] = "running"
+            status, full_log = run_stage(
+                base, stage, stage_args(stage, paths, inputs),
+                status_slot, log_slot)
+            build["states"][stage] = status
+            build["logs"][stage] = full_log
+            if status != "succeeded":
+                failed = True
+                break
+        if not failed:
+            # Advisory review report: a failed report must not fail a
+            # build that already validated -- it only informs approval.
+            try:
+                status, full_log = run_stage(
+                    base, "review-report",
+                    stage_args("review-report", paths, inputs),
+                    status_slot, log_slot)
+                build["states"]["review-report"] = status
+                build["logs"]["review-report"] = full_log
+            except Exception as err:  # noqa: BLE001 - advisory only
+                build["states"]["review-report"] = "error"
+                build["logs"]["review-report"] = str(err)
+            build["done"] = True
+            st.success("Build finished. Review the golden set below, "
+                       "then approve it.")
+
+    states = build.get("states", {})
+    if states:
+        st.subheader("Build progress")
+        st.dataframe([{"stage": s, "status": states.get(s, "waiting")}
+                      for s in list(BUILD_STAGES) + ["review-report"]
+                      if s in states], use_container_width=True)
+        failed = [s for s, v in states.items()
+                  if v in ("failed", "error", "unknown")]
+        if failed:
+            st.error(f"Stage {failed[0]} failed -- the chain stopped "
+                     f"there. Its log:")
+            st.code(build["logs"].get(failed[0], ""))
+
+    if build.get("done"):
+        paths = build["paths"]
+        st.subheader("Review & approve")
+        st.caption("Flags are advisory: a flag means look here, never an "
+                   "automatic reject. Approval is your call.")
+        try:
+            with open(paths["review_report"], encoding="utf-8") as f:
+                report = json.load(f)
+            build["report"] = report
+        except (OSError, ValueError):
+            report = None
+        if report is not None:
+            st.write(f"Questions: {report['n_questions']} | flagged: "
+                     f"{report['n_flagged']} | dense check: "
+                     f"{report['dense']}")
+            flagged = [q for q in report["questions"] if q["flags"]]
+            if flagged:
+                st.dataframe(
+                    [{"question": q["id"],
+                      "flags": "; ".join(q["flags"])} for q in flagged],
+                    use_container_width=True)
+            else:
+                st.write("No question flags.")
+            cov = report["coverage"]
+            st.write("Coverage (counts; empty strata flagged below)")
+            st.dataframe(
+                [{"axis": "query_type", **cov["by_query_type"]},
+                 {"axis": "content_tag", **cov["by_content_tag"]}],
+                use_container_width=True)
+            for flag in cov["flags"]:
+                st.warning(f"Coverage: {flag}")
+        else:
+            st.info("No review report found -- see the review-report "
+                    "stage log for its output.")
+        with st.expander("Review queue (human spot-check list)"):
+            try:
+                with open(paths["review_queue"], encoding="utf-8") as f:
+                    st.code(f.read())
+            except OSError:
+                st.info("No review queue file written.")
+        with st.expander("Validate stage log"):
+            st.code(build["logs"].get("validate", ""))
+        if st.button("Approve this golden set"):
+            try:
+                with open(paths["marker"], "w", encoding="utf-8") as f:
+                    f.write(f"approved: "
+                            f"{datetime.datetime.now(datetime.timezone.utc).isoformat()}\n"
+                            f"golden: {paths['golden']}\n")
+                st.success(f"Approved. Marker written: {paths['marker']} "
+                           f"-- the Evaluation page (step 14) will only "
+                           f"offer approved sets.")
+            except OSError as err:
+                st.error(f"could not write approval marker: {err}")
+
+
+def evaluation_page():
+    st.header("Evaluation")
+    st.info("Step 14 builds this page. Planned: register an experiment "
+            "by selecting an approved golden-set split, a retrieval "
+            "strategy (dense, bm25, hybrid), reranking or not (rerank "
+            "only with hybrid, pool N exposed), and Top-K. Experiments "
+            "appear in a table with status pending/completed; selecting "
+            "one runs it through a new FastAPI endpoint, and the Results "
+            "page shows it when it completes.")
+
+
+def results_page():
+    st.header("Eval Results")
+    uploaded = st.file_uploader("Upload a step-12 results JSON",
+                                type=["json"])
+    path = st.text_input("...or a path to one", value="")
     if uploaded is None and not path:
         st.info("Upload a step-12 results JSON (or give its path) to "
                 "see the run.")
@@ -141,6 +450,26 @@ def main():
         st.write(f"latency: {result.get('latency_s')} s")
         st.subheader("Ranked chunks")
         st.dataframe(result.get("ranked", []), use_container_width=True)
+
+
+def main():
+    st.title("RagBenchmarkPlatform")
+    st.sidebar.header("Backend")
+    base = st.sidebar.text_input("API URL", value="http://localhost:8000")
+    try:
+        health = api_get(base, "/health")
+        st.sidebar.success(f"API ok: {', '.join(health.get('stages', []))}")
+    except Exception as err:  # noqa: BLE001 - health is advisory
+        st.sidebar.warning(f"API not reachable: "
+                           f"{describe_api_error(err)} -- start it with "
+                           f"uvicorn src.api.main:app from the repo root.")
+    page = st.sidebar.radio("Page", ["Data Setup", "Evaluation", "Results"])
+    if page == "Data Setup":
+        data_setup_page(base)
+    elif page == "Evaluation":
+        evaluation_page()
+    else:
+        results_page()
 
 
 if __name__ == "__main__":

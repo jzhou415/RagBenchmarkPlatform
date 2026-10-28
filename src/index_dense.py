@@ -127,6 +127,12 @@ def main(argv=None):
                     help="full/chunk_manifest.yaml sidecar from step 4")
     ap.add_argument("--out-dir", default="indexes",
                     help="parent dir for the named index (default: indexes)")
+    ap.add_argument("--embed-cache", default=None,
+                    help="embedding cache file to reuse (e.g. the one "
+                         "auto_map.py wrote); default: "
+                         "<out-dir>/.embed_cache_<hash12>.json. Sharing "
+                         "auto_map's cache means the corpus is embedded "
+                         "once, not once per stage.")
     args = ap.parse_args(argv)
 
     if "OPENAI_API_KEY" not in os.environ:
@@ -150,7 +156,11 @@ def main(argv=None):
         sys.exit(f"no chunks in {args.manifest}")
 
     os.makedirs(args.out_dir, exist_ok=True)
-    cache_path = os.path.join(args.out_dir, f".embed_cache_{tag}.json")
+    cache_path = args.embed_cache or os.path.join(
+        args.out_dir, f".embed_cache_{tag}.json")
+    cache_dir = os.path.dirname(cache_path)
+    if cache_dir:
+        os.makedirs(cache_dir, exist_ok=True)
     client = make_client()
     vectors = embed_with_cache(client, chunks, cache_path)
 

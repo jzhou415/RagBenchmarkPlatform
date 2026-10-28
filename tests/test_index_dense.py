@@ -92,5 +92,104 @@ class TestDenseIndex(unittest.TestCase):
             index_dense.ADD_BATCH = old_batch
 
 
+class _FakeEmbedding:
+    def __init__(self, vector):
+        self.embedding = vector
+
+
+class _FakeEmbeddingsResp:
+    def __init__(self, vectors):
+        self.data = [_FakeEmbedding(v) for v in vectors]
+
+
+class _FakeEmbeddings:
+    """Records calls; returns deterministic one-hot vectors."""
+    def __init__(self):
+        self.calls = []
+        self.seen = 0
+
+    def create(self, model, input):
+        self.calls.append(list(input))
+        vecs = []
+        for _ in input:
+            v = [0.0, 0.0, 0.0]
+            v[self.seen % 3] = 1.0
+            vecs.append(v)
+            self.seen += 1
+        return _FakeEmbeddingsResp(vecs)
+
+
+class _FakeClient:
+    def __init__(self):
+        self.embeddings = _FakeEmbeddings()
+
+
+class TestEmbedCacheFlag(unittest.TestCase):
+    def _write_inputs(self, td, chunks):
+        import json
+        manifest = os.path.join(td, "manifest.jsonl")
+        with open(manifest, "w", encoding="utf-8") as f:
+            for c in chunks:
+                f.write(json.dumps(c) + "\n")
+        cm = os.path.join(td, "chunk_manifest.yaml")
+        with open(cm, "w", encoding="utf-8") as f:
+            f.write("config_hash: abcdef1234567890\n")
+        return manifest, cm
+
+    def test_reuses_shared_cache_without_api_calls(self):
+        # auto_map's cache, prefilled: index_dense must embed nothing.
+        import json
+        from unittest import mock
+        from src import index_dense
+        chunks = make_chunks()
+        vecs = {c["chunk_id"]: v
+                for c, v in zip(chunks, fake_vectors())}
+        with tempfile.TemporaryDirectory() as td:
+            manifest, cm = self._write_inputs(td, chunks)
+            shared = os.path.join(td, "embed_cache", "chunk_embeddings.json")
+            os.makedirs(os.path.dirname(shared), exist_ok=True)
+            with open(shared, "w", encoding="utf-8") as f:
+                json.dump(vecs, f)
+            fake = _FakeClient()
+            with mock.patch.dict(os.environ,
+                                 {"OPENAI_API_KEY": "test"}), \
+                 mock.patch.object(index_dense, "make_client",
+                                   return_value=fake):
+                index_dense.main(["--manifest", manifest,
+                                  "--chunk-manifest", cm,
+                                  "--out-dir", os.path.join(td, "indexes"),
+                                  "--embed-cache", shared])
+            self.assertEqual(fake.embeddings.calls, [])
+            persist = os.path.join(td, "indexes", "dense_abcdef123456")
+            self.assertTrue(os.path.isdir(persist))
+
+    def test_embed_cache_flag_creates_parent_and_writes_there(self):
+        import json
+        from unittest import mock
+        from src import index_dense
+        chunks = make_chunks()
+        with tempfile.TemporaryDirectory() as td:
+            manifest, cm = self._write_inputs(td, chunks)
+            fresh = os.path.join(td, "newdir", "sub", "cache.json")
+            fake = _FakeClient()
+            with mock.patch.dict(os.environ,
+                                 {"OPENAI_API_KEY": "test"}), \
+                 mock.patch.object(index_dense, "make_client",
+                                   return_value=fake):
+                index_dense.main(["--manifest", manifest,
+                                  "--chunk-manifest", cm,
+                                  "--out-dir", os.path.join(td, "indexes"),
+                                  "--embed-cache", fresh])
+            self.assertTrue(os.path.isfile(fresh))
+            with open(fresh, encoding="utf-8") as f:
+                saved = json.load(f)
+            self.assertEqual(set(saved), {c["chunk_id"] for c in chunks})
+            # Default cache location untouched: the flag, not the
+            # default, was used.
+            self.assertFalse(os.path.exists(
+                os.path.join(td, "indexes", ".embed_cache_abcdef123456.json")))
+            self.assertTrue(fake.embeddings.calls)
+
+
 if __name__ == "__main__":
     unittest.main()

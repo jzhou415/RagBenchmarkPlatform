@@ -63,6 +63,10 @@ STAGES = {
         "script": "src/index_dense.py",
         "description": "Embed the corpus, store in Chroma",
     },
+    "review-report": {
+        "script": "src/review_report.py",
+        "description": "Automatic review checks on the golden set (advisory)",
+    },
 }
 
 app = FastAPI(title="RagBenchmarkPlatform API")
