@@ -233,5 +233,19 @@ class TestComparisonRows(unittest.TestCase):
         self.assertEqual(grouped["heldout"][0]["n_questions"], 50)
 
 
+class TestExperimentTableRows(unittest.TestCase):
+    def test_rerank_blank_when_not_selected(self):
+        rows = app.experiment_table_rows([
+            {"id": "a", "split": "dev", "strategy": "hybrid",
+             "rerank": True, "rerank_pool_n": 10,
+             "status": "completed", "results_file": "r1.json"},
+            {"id": "b", "split": "dev", "strategy": "dense",
+             "rerank": False, "rerank_pool_n": None,
+             "status": "completed", "results_file": "r2.json"},
+        ])
+        self.assertEqual(rows[0]["rerank"], "@10")
+        self.assertEqual(rows[1]["rerank"], "")
+
+
 if __name__ == "__main__":
     unittest.main()

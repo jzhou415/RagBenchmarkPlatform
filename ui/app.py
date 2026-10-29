@@ -472,6 +472,22 @@ def data_setup_page(base):
                 st.error(f"could not write approval marker: {err}")
 
 
+def experiment_table_rows(experiments):
+    """Table rows for the Evaluation page experiment list.
+
+    Non-rerank experiments get a blank rerank cell: a '-' placeholder
+    renders as a bullet in the table, which reads as if rerank were
+    selected.
+    """
+    return [{"id": e["id"], "split": e["split"],
+             "strategy": e["strategy"],
+             "rerank": (f"@{e['rerank_pool_n']}"
+                        if e["rerank"] else ""),
+             "status": e["status"],
+             "results_file": e["results_file"]}
+            for e in experiments]
+
+
 def evaluation_page(base):
     st.header("Evaluation")
     st.write("Register a strategy-specific experiment on an approved "
@@ -533,14 +549,7 @@ def evaluation_page(base):
     if not experiments:
         st.info("No experiments yet -- register one above.")
         return
-    rows = [{"id": e["id"], "split": e["split"],
-             "strategy": e["strategy"],
-             "rerank": (f"@{e['rerank_pool_n']}"
-                        if e["rerank"] else "-"),
-             "status": e["status"],
-             "results_file": e["results_file"]}
-            for e in experiments]
-    st.table(rows)
+    st.table(experiment_table_rows(experiments))
     labels = [f"{e['id']} | {e['split']} | {e['strategy']} "
               f"{'+ rerank@' + str(e['rerank_pool_n']) if e['rerank'] else ''} "
               f"| {e['status']}" for e in experiments]
