@@ -7,6 +7,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
@@ -180,6 +181,156 @@ class TestModuleExecution(unittest.TestCase):
                 api_main.STAGES = old_stages
                 api_main.RUNS_DIR = old_runs
                 api_main.ROOT = old_root
+
+
+class TestExperiments(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+        self._old_results = api_main.RESULTS_DIR
+        api_main.RESULTS_DIR = self.dir / "results"
+        self._env = mock.patch.dict(os.environ,
+                                    {"OPENAI_API_KEY": "test-key"})
+        self._env.start()
+        self.golden = self.dir / "golden_dev.yaml"
+        self.golden.write_text("questions: []\n", encoding="utf-8")
+        (self.dir / "golden_dev.yaml.approved").write_text(
+            "", encoding="utf-8")
+        self.manifest = self.dir / "manifest.jsonl"
+        self.manifest.write_text("", encoding="utf-8")
+        self.indexes = self.dir / "indexes"
+        self.indexes.mkdir()
+        self.client = make_client()
+
+    def tearDown(self):
+        self._env.stop()
+        api_main.RESULTS_DIR = self._old_results
+        self._tmp.cleanup()
+
+    def _body(self, **over):
+        body = {"golden_set": str(self.golden), "split": "dev",
+                "strategy": "hybrid", "rerank": False,
+                "indexes_dir": str(self.indexes),
+                "manifest": str(self.manifest)}
+        body.update(over)
+        return body
+
+    def _register(self, **over):
+        r = self.client.post("/experiments", json=self._body(**over))
+        self.assertEqual(r.status_code, 201, r.text)
+        return r.json()
+
+    def test_register_success(self):
+        record = self._register()
+        self.assertEqual(record["status"], "pending")
+        self.assertTrue(record["results_file"].endswith(
+            f"exp_{record['id']}_dev_hybrid.json"))
+        self.assertTrue((api_main.RESULTS_DIR
+                         / "experiments.json").exists())
+        listed = self.client.get("/experiments").json()
+        self.assertEqual([e["id"] for e in listed], [record["id"]])
+        got = self.client.get(f"/experiments/{record['id']}").json()
+        self.assertEqual(got["id"], record["id"])
+
+    def test_register_rejects_unapproved(self):
+        (self.dir / "golden_dev.yaml.approved").unlink()
+        r = self.client.post("/experiments", json=self._body())
+        self.assertEqual(r.status_code, 422)
+
+    def test_register_rejects_missing_golden(self):
+        r = self.client.post(
+            "/experiments",
+            json=self._body(golden_set=str(self.dir / "nope.yaml")))
+        self.assertEqual(r.status_code, 422)
+
+    def test_register_rejects_rerank_without_hybrid(self):
+        r = self.client.post(
+            "/experiments",
+            json=self._body(strategy="dense", rerank=True))
+        self.assertEqual(r.status_code, 422)
+
+    def test_register_rejects_bad_strategy_and_split(self):
+        r = self.client.post("/experiments",
+                             json=self._body(strategy="nope"))
+        self.assertEqual(r.status_code, 422)
+        r = self.client.post("/experiments",
+                             json=self._body(split="nope"))
+        self.assertEqual(r.status_code, 422)
+
+    def test_strategy_rungs_and_filename(self):
+        self.assertEqual(api_main.strategy_rungs("dense", False, 10),
+                         ("semantic",))
+        self.assertEqual(api_main.strategy_rungs("bm25", False, 10),
+                         ("bm25",))
+        self.assertEqual(api_main.strategy_rungs("hybrid", False, 10),
+                         ("hybrid",))
+        self.assertEqual(api_main.strategy_rungs("hybrid", True, 20),
+                         ("hybrid", "hybrid_rerank@20"))
+        self.assertEqual(api_main.experiment_results_filename(
+            "abc", "dev", "hybrid", False, 10),
+            "exp_abc_dev_hybrid.json")
+        self.assertEqual(api_main.experiment_results_filename(
+            "abc", "heldout", "hybrid", True, 20),
+            "exp_abc_heldout_hybrid_rerank20.json")
+
+    def test_experiment_command(self):
+        record = {"strategy": "hybrid", "rerank": True,
+                  "rerank_pool_n": 20,
+                  "golden_set": str(self.golden),
+                  "indexes_dir": str(self.indexes),
+                  "manifest": str(self.manifest),
+                  "results_file": str(self.dir / "out.json")}
+        cmd = api_main._experiment_command(record)
+        self.assertIn("-m", cmd)
+        self.assertIn("src.eval_runner", cmd)
+        self.assertEqual(cmd[cmd.index("--ks") + 1], "3,5,10")
+        self.assertEqual(cmd[cmd.index("--rungs") + 1],
+                         "hybrid,hybrid_rerank@20")
+        self.assertEqual(cmd[cmd.index("--candidate-ns") + 1], "20")
+        record["rerank"] = False
+        cmd = api_main._experiment_command(record)
+        self.assertNotIn("--candidate-ns", cmd)
+        self.assertEqual(cmd[cmd.index("--rungs") + 1], "hybrid")
+
+    def test_run_completes_with_fake_popen_then_conflicts(self):
+        record = self._register(strategy="hybrid", rerank=True,
+                                rerank_pool_n=20)
+        exp_id = record["id"]
+
+        class FakePopen:
+            def __init__(self, cmd, **kwargs):
+                out = cmd[cmd.index("--out") + 1]
+                Path(out).parent.mkdir(parents=True, exist_ok=True)
+                Path(out).write_text(json.dumps({"run": {}}),
+                                     encoding="utf-8")
+
+            def wait(self):
+                return 0
+
+        with mock.patch.object(api_main.subprocess, "Popen", FakePopen):
+            r = self.client.post(f"/experiments/{exp_id}/run")
+            self.assertEqual(r.status_code, 202, r.text)
+            for _ in range(100):
+                status = self.client.get(
+                    f"/experiments/{exp_id}").json()["status"]
+                if status != "running":
+                    break
+                time.sleep(0.05)
+            self.assertEqual(status, "completed")
+            log = self.client.get(
+                f"/experiments/{exp_id}/log").json()["log"]
+            self.assertIn("-m src.eval_runner", log.splitlines()[0])
+            self.assertTrue(Path(record["results_file"]).exists())
+        r = self.client.post(f"/experiments/{exp_id}/run")
+        self.assertEqual(r.status_code, 409)
+
+    def test_unknown_experiment_404s(self):
+        self.assertEqual(self.client.get("/experiments/nope").status_code,
+                         404)
+        self.assertEqual(self.client.get(
+            "/experiments/nope/log").status_code, 404)
+        self.assertEqual(self.client.post(
+            "/experiments/nope/run").status_code, 404)
 
 
 if __name__ == "__main__":

@@ -150,6 +150,51 @@ class TestRunEval(unittest.TestCase):
         self.assertIn("Best by content_tag (ndcg@10)", text)
 
 
+class TestRunEvalRungs(unittest.TestCase):
+    def _qs(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = _write(d, "golden.yaml", GOLDEN_YAML)
+            return ev.load_golden_questions(path)
+
+    def test_subset_scores_only_requested(self):
+        qs = self._qs()
+        res = ev.run_eval(qs, fake_search, ks=(3, 5, 10),
+                          candidate_ns=(10, 20), rungs=("semantic",))
+        for row in res["per_question"].values():
+            self.assertEqual(set(row["results"]), {"semantic"})
+        self.assertEqual(set(res["mean"]), {"semantic"})
+        self.assertEqual(set(res["latency"]), {"semantic"})
+
+    def test_hybrid_rerank_subset(self):
+        qs = self._qs()
+        res = ev.run_eval(qs, fake_search, ks=(3, 5, 10),
+                          candidate_ns=(10, 20),
+                          rungs=("hybrid", "hybrid_rerank@10"))
+        self.assertEqual(set(res["mean"]),
+                         {"hybrid", "hybrid_rerank@10"})
+
+    def test_default_scores_all(self):
+        qs = self._qs()
+        res = ev.run_eval(qs, fake_search, ks=(3, 5, 10),
+                          candidate_ns=(10, 20))
+        self.assertEqual(set(res["mean"]),
+                         {"semantic", "bm25", "hybrid",
+                          "hybrid_rerank@10", "hybrid_rerank@20"})
+
+    def test_unknown_rung_raises_before_search(self):
+        qs = self._qs()
+        calls = []
+
+        def counting_search(question, label):
+            calls.append(label)
+            return fake_search(question, label)
+
+        with self.assertRaises(ValueError):
+            ev.run_eval(qs, counting_search, ks=(3, 5, 10),
+                        candidate_ns=(10, 20), rungs=("nope",))
+        self.assertEqual(calls, [])
+
+
 class TestMainValidation(unittest.TestCase):
     def test_missing_required_args_exits(self):
         with self.assertRaises(SystemExit):
@@ -160,6 +205,12 @@ class TestMainValidation(unittest.TestCase):
             ev.main(["--golden-set", "nope.yaml",
                      "--manifest", "nope.jsonl",
                      "--out", "nope.json", "--ks", "3,x"])
+
+    def test_bad_rungs_exits_before_any_file_access(self):
+        with self.assertRaises(SystemExit):
+            ev.main(["--golden-set", "nope.yaml",
+                     "--manifest", "nope.jsonl",
+                     "--out", "nope.json", "--rungs", "nope"])
 
 
 if __name__ == "__main__":

@@ -5,9 +5,11 @@ Pages (sidebar selector):
     and the golden-set output dir, then Build runs the 7 pipeline stages
     in order through the FastAPI backend, with per-stage progress and a
     review-and-approve section for the golden set.
-  Evaluation (step 14, placeholder): built by step 14 -- experiment
-    registration, pending -> completed flow, runs through a new FastAPI
-    endpoint. Only approved golden sets will be offered.
+  Evaluation (step 14): register a strategy-specific experiment on
+    an approved golden set (split, dense/bm25/hybrid, rerank only
+    with hybrid, pool N exposed, Top-K fixed 3/5/10), watch it go
+    pending -> running -> completed through a new FastAPI endpoint,
+    one results JSON per experiment.
   Results (step 15 target, viewer moved here from the old step-13 app):
     reads a step-12 results JSON via upload or path. The cross-experiment
     comparison view is step 15's work.
@@ -109,6 +111,16 @@ def api_post_run(base, stage_id, args, timeout=10):
         headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.load(resp)["run_id"]
+
+
+def api_post(base, path, body=None, timeout=10):
+    """POST JSON to the API; body None sends an empty POST."""
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(
+        base.rstrip("/") + path, data=data,
+        headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.load(resp)
 
 
 def api_run_status(base, run_id, timeout=10):
@@ -458,15 +470,120 @@ def data_setup_page(base):
                 st.error(f"could not write approval marker: {err}")
 
 
-def evaluation_page():
+def evaluation_page(base):
     st.header("Evaluation")
-    st.info("Step 14 builds this page. Planned: register an experiment "
-            "by selecting an approved golden-set split, a retrieval "
-            "strategy (dense, bm25, hybrid), reranking or not (rerank "
-            "only with hybrid, pool N exposed), and Top-K. Experiments "
-            "appear in a table with status pending/completed; selecting "
-            "one runs it through a new FastAPI endpoint, and the Results "
-            "page shows it when it completes.")
+    st.write("Register a strategy-specific experiment on an approved "
+             "golden set, then run it. Top-K is fixed at 3/5/10 and "
+             "the reranker is the runner default (local cross-encoder), "
+             "per the approved step-14 spec.")
+    st.subheader("Register an experiment")
+    golden = st.text_input("Golden-set path",
+                           value="data/golden_set/golden_dev.yaml",
+                           help="Must carry a <golden>.approved marker "
+                                "from the Data Setup page.")
+    if golden:
+        marker = golden + ".approved"
+        if os.path.exists(marker):
+            st.caption(f"Approved marker found: {marker}")
+        else:
+            st.caption("Not approved yet -- run Data Setup and approve "
+                       "this golden set first.")
+    split_label = st.selectbox("Split", ["dev", "held-out"])
+    split = "heldout" if split_label == "held-out" else "dev"
+    strategy = st.selectbox("Retrieval strategy",
+                            ["dense", "bm25", "hybrid"])
+    rerank = False
+    pool_n = 10
+    if strategy == "hybrid":
+        rerank = st.checkbox("Rerank the hybrid results", value=False)
+        if rerank:
+            pool_n = st.number_input("Rerank pool N", value=10,
+                                     min_value=1,
+                                     help="Hybrid candidates the "
+                                          "reranker sees.")
+    indexes_dir = st.text_input("Indexes dir", value="indexes")
+    manifest = st.text_input(
+        "Manifest path (empty = <golden dir>/manifest.jsonl)", value="")
+    if st.button("Register experiment"):
+        body = {"golden_set": golden, "split": split,
+                "strategy": strategy, "rerank": rerank,
+                "rerank_pool_n": int(pool_n),
+                "indexes_dir": indexes_dir}
+        if manifest.strip():
+            body["manifest"] = manifest.strip()
+        try:
+            record = api_post(base, "/experiments", body)
+            label = f"{split} / {strategy}"
+            if rerank:
+                label += f" + rerank@{pool_n}"
+            st.success(f"Registered {record['id']} ({label}) "
+                       f"-- status: pending.")
+        except Exception as err:  # noqa: BLE001 - surfaced
+            st.error(describe_api_error(err))
+    st.subheader("Experiments")
+    st.button("Refresh table")  # rerun reloads the table below
+    try:
+        experiments = api_get(base, "/experiments")
+    except Exception as err:  # noqa: BLE001 - surfaced
+        st.error(f"Could not load experiments: "
+                 f"{describe_api_error(err)}")
+        return
+    if not experiments:
+        st.info("No experiments yet -- register one above.")
+        return
+    rows = [{"id": e["id"], "split": e["split"],
+             "strategy": e["strategy"],
+             "rerank": (f"@{e['rerank_pool_n']}"
+                        if e["rerank"] else "-"),
+             "status": e["status"],
+             "results_file": e["results_file"]}
+            for e in experiments]
+    st.table(rows)
+    labels = [f"{e['id']} | {e['split']} | {e['strategy']} "
+              f"{'+ rerank@' + str(e['rerank_pool_n']) if e['rerank'] else ''} "
+              f"| {e['status']}" for e in experiments]
+    choice = st.selectbox("Select an experiment", labels)
+    selected = experiments[labels.index(choice)]
+    if selected["status"] not in ("pending", "failed"):
+        st.info(f"Experiment {selected['id']} is "
+                f"{selected['status']} -- only pending or failed "
+                f"experiments can run.")
+        if selected["status"] == "completed":
+            st.write(f"Results: {selected['results_file']} -- open the "
+                     f"Results page and load this file.")
+        return
+    if st.button("Run selected experiment"):
+        try:
+            api_post(base, f"/experiments/{selected['id']}/run")
+        except Exception as err:  # noqa: BLE001 - surfaced
+            st.error(describe_api_error(err))
+            return
+        status_slot = st.empty()
+        log_slot = st.empty()
+        status = "running"
+        log = ""
+        while status == "running":
+            time.sleep(2)
+            try:
+                status = api_get(
+                    base, f"/experiments/{selected['id']}").get(
+                        "status", "unknown")
+                log = api_get(
+                    base,
+                    f"/experiments/{selected['id']}/log?tail=15").get(
+                        "log", "")
+            except Exception as err:  # noqa: BLE001 - surfaced
+                st.error(describe_api_error(err))
+                return
+            status_slot.write(f"**{selected['id']}**: {status}")
+            log_slot.code(log or "(no log output yet)")
+        if status == "completed":
+            st.success(f"Experiment {selected['id']} completed. "
+                       f"Results: {selected['results_file']} -- open "
+                       f"the Results page and load this file.")
+        else:
+            st.error(f"Experiment {selected['id']} failed -- see the "
+                     f"log above.")
 
 
 def results_page():
@@ -560,7 +677,7 @@ def main():
     if page == "Data Setup":
         data_setup_page(base)
     elif page == "Evaluation":
-        evaluation_page()
+        evaluation_page(base)
     else:
         results_page()
 

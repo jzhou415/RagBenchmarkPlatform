@@ -98,17 +98,30 @@ def _stratified(per_question, key_fn):
 
 
 def run_eval(questions, search, ks=DEFAULT_KS,
-             candidate_ns=DEFAULT_CANDIDATE_NS):
+             candidate_ns=DEFAULT_CANDIDATE_NS, rungs=None):
     """Core evaluation, no index or API access.
 
     search(question_text, rung_label) -> (ranked [(chunk_id, score)],
     latency_s). rung_label is "semantic" | "bm25" | "hybrid" |
-    "hybrid_rerank@N". Returns {"per_question", "mean",
-    "by_query_type", "by_content_tag", "latency"}.
+    "hybrid_rerank@N". rungs (None = all) restricts the computation
+    to a subset -- step 14's strategy-specific experiments run only
+    their strategy, e.g. ("hybrid", "hybrid_rerank@10"). Unknown
+    labels raise ValueError before any search runs. Returns
+    {"per_question", "mean", "by_query_type", "by_content_tag",
+    "latency"}.
     """
     max_k = max(ks)
-    rung_labels = list(RUNGS) + [f"hybrid_rerank@{n}"
-                                 for n in candidate_ns]
+    all_labels = list(RUNGS) + [f"hybrid_rerank@{n}"
+                                for n in candidate_ns]
+    if rungs is None:
+        rung_labels = all_labels
+    else:
+        unknown = [r for r in rungs if r not in all_labels]
+        if unknown:
+            raise ValueError(
+                f"unknown rung(s): {', '.join(unknown)} "
+                f"(valid: {', '.join(all_labels)})")
+        rung_labels = [label for label in all_labels if label in rungs]
     per_question = {}
     for q in questions:
         results = {}
@@ -201,6 +214,10 @@ def main(argv=None):
     ap.add_argument("--candidate-ns", default="10,20,50",
                     help="comma-separated rerank candidate counts "
                          "(default 10,20,50)")
+    ap.add_argument("--rungs", default=None,
+                    help="comma-separated subset of rungs to score "
+                         "(e.g. 'semantic' or "
+                         "'hybrid,hybrid_rerank@10'); default: all")
     ap.add_argument("--ks", default="3,5,10",
                     help="comma-separated k values (default 3,5,10)")
     ap.add_argument("--out", required=True,
@@ -222,6 +239,15 @@ def main(argv=None):
         sys.exit("--ks must be comma-separated integers")
     if not ks:
         sys.exit("--ks must list at least one k")
+    rungs = (tuple(x.strip() for x in args.rungs.split(",") if x.strip())
+             if args.rungs else None)
+    if rungs is not None:
+        valid = set(RUNGS) | {f"hybrid_rerank@{n}"
+                              for n in candidate_ns}
+        unknown = [r for r in rungs if r not in valid]
+        if unknown:
+            sys.exit(f"unknown rung(s): {', '.join(unknown)} "
+                     f"(valid: {', '.join(sorted(valid))})")
     if "OPENAI_API_KEY" not in os.environ:
         sys.exit("OPENAI_API_KEY not set in environment")
 
@@ -256,7 +282,10 @@ def main(argv=None):
         return ranked, time.perf_counter() - t0
 
     results = run_eval(questions, search, ks=ks,
-                       candidate_ns=candidate_ns)
+                       candidate_ns=candidate_ns, rungs=rungs)
+    ran_ns = sorted({int(label.split("@")[1])
+                     for label in results["mean"]
+                     if label.startswith("hybrid_rerank@")})
     output = {
         "run": {
             "golden_set": args.golden_set,
@@ -269,7 +298,7 @@ def main(argv=None):
             },
             "reranker": args.reranker,
             "reranker_model": reranker_model,
-            "candidate_ns": list(candidate_ns),
+            "candidate_ns": ran_ns,
             "ks": list(ks),
             "timestamp": datetime.datetime.now(
                 datetime.timezone.utc).isoformat(),
