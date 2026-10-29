@@ -10,9 +10,11 @@ Pages (sidebar selector):
     with hybrid, pool N exposed, Top-K fixed 3/5/10), watch it go
     pending -> running -> completed through a new FastAPI endpoint,
     one results JSON per experiment.
-  Results (step 15 target, viewer moved here from the old step-13 app):
-    reads a step-12 results JSON via upload or path. The cross-experiment
-    comparison view is step 15's work.
+  Results (step 15): Experiments mode loads completed experiments
+    from the step-14 registry and shows a cross-experiment comparison
+    (mean nDCG@10 + p50 latency, grouped by split so dev and held-out
+    are never compared against each other), plus per-experiment detail;
+    Single file mode keeps the old upload-or-path viewer.
 
 Run from the repo root: streamlit run ui/app.py
 The API must be running: uvicorn src.api.main:app (from the repo root).
@@ -586,25 +588,135 @@ def evaluation_page(base):
                      f"log above.")
 
 
-def results_page():
-    st.header("Eval Results")
-    uploaded = st.file_uploader("Upload a step-12 results JSON",
-                                type=["json"])
-    path = st.text_input("...or a path to one", value="")
-    if uploaded is None and not path:
-        st.info("Upload a step-12 results JSON (or give its path) to "
-                "see the run.")
-        return
-    try:
-        data = load_results(uploaded, path)
-    except (OSError, ValueError) as e:
-        st.error(f"could not read results file: {e}")
-        return
-    err = check_schema(data)
-    if err:
-        st.error(err)
-        return
+def experiment_label(record):
+    """'abc123 | dev | hybrid + rerank@20' for registry records."""
+    label = f"{record['id']} | {record['split']} | {record['strategy']}"
+    if record.get("rerank"):
+        label += f" + rerank@{record.get('rerank_pool_n')}"
+    return label
 
+
+def resolve_results_dir(user_input):
+    """Absolute path as-is; repo-relative path against the repo root.
+
+    The repo root is derived from this file's location, not the
+    Streamlit working directory, so 'results' works regardless of
+    where streamlit was launched from.
+    """
+    if os.path.isabs(user_input):
+        return user_input
+    repo_root = os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))
+    return os.path.join(repo_root, user_input)
+
+
+def read_registry(results_dir):
+    """Registry records, newest first; [] when no registry file."""
+    path = os.path.join(results_dir, "experiments.json")
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        records = json.load(f).get("experiments", {})
+    return sorted(records.values(),
+                  key=lambda r: r.get("created_at", ""), reverse=True)
+
+
+def comparison_rows(loaded):
+    """{split: [rows]} for the comparison table.
+
+    loaded: [(record, results_dict)]. One row per experiment rung --
+    each experiment contributes only its own rungs (step-14 B
+    subsets), so a dense experiment adds a semantic row, not empty
+    bm25/hybrid cells. Metrics use the step-14 standard ks (3/5/10);
+    files with other ks still load, missing metrics read as 0.0.
+    """
+    grouped = {}
+    for record, data in loaded:
+        mean = data.get("mean", {})
+        latency = data.get("latency", {})
+        n_questions = data.get("run", {}).get("n_questions")
+        for rung, m in mean.items():
+            lat = latency.get(rung, {})
+            grouped.setdefault(record["split"], []).append({
+                "experiment": experiment_label(record),
+                "rung": rung,
+                "hit@3": round(m.get("hit@3", 0.0), 4),
+                "recall@10": round(m.get("recall@10", 0.0), 4),
+                "ndcg@10": round(m.get("ndcg@10", 0.0), 4),
+                "p50_s": lat.get("p50"),
+                "n_questions": n_questions,
+            })
+    return grouped
+
+
+def _experiments_mode_data():
+    """Experiments-mode UI: comparison view; returns the detail-
+    selected results dict, or None when nothing can be shown."""
+    results_dir_in = st.text_input(
+        "Results dir", value="results",
+        help="Relative paths resolve against the repo root; the "
+             "step-14 registry (experiments.json) lives here.")
+    results_dir = resolve_results_dir(results_dir_in)
+    try:
+        records = read_registry(results_dir)
+    except (OSError, ValueError) as e:
+        st.error(f"could not read registry: {e}")
+        return None
+    completed = [r for r in records if r.get("status") == "completed"]
+    if not records:
+        st.info("No experiments registry found here -- register and run "
+                "experiments on the Evaluation page first, or switch "
+                "to Single file mode.")
+        return None
+    if not completed:
+        st.info(f"{len(records)} experiment(s) registered, none "
+                f"completed yet -- run one on the Evaluation page.")
+        return None
+    labels = [experiment_label(r) for r in completed]
+    chosen = st.multiselect("Experiments to compare", labels,
+                            default=labels)
+    if not chosen:
+        st.info("Select at least one experiment.")
+        return None
+    loaded = []
+    for record in completed:
+        if experiment_label(record) not in chosen:
+            continue
+        try:
+            data = load_results(None, record["results_file"])
+        except (OSError, ValueError) as e:
+            st.warning(f"{record['id']}: could not load results: {e}")
+            continue
+        err = check_schema(data)
+        if err:
+            st.warning(f"{record['id']}: {err}")
+            continue
+        loaded.append((record, data))
+    if not loaded:
+        st.error("None of the selected experiments could be loaded.")
+        return None
+    st.subheader("Cross-experiment comparison")
+    st.caption("Grouped by split -- dev and held-out are never compared "
+               "against each other. Each experiment contributes only "
+               "its own rungs.")
+    grouped = comparison_rows(loaded)
+    for split in sorted(grouped):
+        st.write(f"**Split: {split}**")
+        rows = grouped[split]
+        st.dataframe(rows, use_container_width=True)
+        chart = {"label": [], "ndcg@10": []}
+        for row in rows:
+            chart["label"].append(f"{row['experiment']} | {row['rung']}")
+            chart["ndcg@10"].append(row["ndcg@10"])
+        st.bar_chart(chart, x="label", y="ndcg@10")
+    st.subheader("Per-experiment detail")
+    detail_labels = [experiment_label(r) for r, _ in loaded]
+    detail_choice = st.selectbox("Experiment", detail_labels)
+    return loaded[detail_labels.index(detail_choice)][1]
+
+
+def show_results_viewer(data):
+    """Overview / Stratified / Per-question tabs for one results dict."""
     run = data["run"]
     ks = run.get("ks", [3, 5, 10])
     k_large = ks[-1]
@@ -658,6 +770,34 @@ def results_page():
         st.write(f"latency: {result.get('latency_s')} s")
         st.subheader("Ranked chunks")
         st.dataframe(result.get("ranked", []), use_container_width=True)
+
+
+def results_page():
+    st.header("Eval Results")
+    mode = st.selectbox("Load results from",
+                        ["Experiments", "Single file"])
+    if mode == "Experiments":
+        data = _experiments_mode_data()
+        if data is None:
+            return
+    else:
+        uploaded = st.file_uploader("Upload a step-12 results JSON",
+                                    type=["json"])
+        path = st.text_input("...or a path to one", value="")
+        if uploaded is None and not path:
+            st.info("Upload a step-12 results JSON (or give its path) "
+                    "to see the run.")
+            return
+        try:
+            data = load_results(uploaded, path)
+        except (OSError, ValueError) as e:
+            st.error(f"could not read results file: {e}")
+            return
+        err = check_schema(data)
+        if err:
+            st.error(err)
+            return
+    show_results_viewer(data)
 
 
 def main():
