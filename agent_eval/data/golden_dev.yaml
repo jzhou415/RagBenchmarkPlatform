@@ -1,0 +1,1084 @@
+schema_version: '1.1'
+corpus:
+  name: owasp-asvs-4.0.3
+  source: pdf
+  pages: 71
+  sha256: '31f7755e6564b657454388079aa87b3c62884b7b91e1053eef5dd2a9107419d2'
+ingestion:
+  config_hash: 461e2da0f6b5e3836151ae1e1813cbf2796522527d947b2d213e1f9422a62b62
+  parser: docling
+  chunk_size: 1000
+  chunk_overlap: 200
+questions:
+- id: q001
+  split: dev
+  provenance: auto
+  question: How does the adoption of a secure software development lifecycle contribute
+    to aligning with advanced authentication standards in application security?
+  query_type: multi_hop
+  content_tags:
+  - policy
+  expected_answer: "Verify the use of a secure software development lifecycle that\
+    \ addresses security in all stages of development. (C1) \nThe most significant\
+    \ change in this version is the adoption of the NIST 800-63-3 Digital Identity\
+    \ Guidelines, introducing modern, evidence based, and advanced authentication\
+    \ controls."
+  answer_span: ''
+  ground_truth:
+  - chunk_id: p17_c05
+    page: 17
+    relevance: 3
+  - chunk_id: p22_c02
+    page: 22
+    relevance: 2
+  - chunk_id: p66_c04
+    page: 66
+    relevance: 2
+  - chunk_id: p9_c04
+    page: 9
+    relevance: 2
+  - chunk_id: p11_c00
+    page: 11
+    relevance: 1
+  - chunk_id: p11_c03
+    page: 11
+    relevance: 1
+  - chunk_id: p12_c00
+    page: 12
+    relevance: 1
+  - chunk_id: p14_c01
+    page: 14
+    relevance: 1
+  - chunk_id: p15_c04
+    page: 15
+    relevance: 1
+  - chunk_id: p16_c00
+    page: 16
+    relevance: 1
+  - chunk_id: p18_c01
+    page: 18
+    relevance: 1
+  - chunk_id: p21_c01
+    page: 21
+    relevance: 1
+  - chunk_id: p26_c00
+    page: 26
+    relevance: 1
+  - chunk_id: p2_c06
+    page: 2
+    relevance: 1
+  - chunk_id: p2_c07
+    page: 2
+    relevance: 1
+  - chunk_id: p61_c01
+    page: 61
+    relevance: 1
+  - chunk_id: p9_c01
+    page: 9
+    relevance: 1
+  - chunk_id: p9_c02
+    page: 9
+    relevance: 1
+  - chunk_id: p9_c05
+    page: 9
+    relevance: 1
+  - chunk_id: p9_c06
+    page: 9
+    relevance: 1
+  - chunk_id: p9_c07
+    page: 9
+    relevance: 1
+  notes: ''
+- id: q002
+  split: dev
+  provenance: auto
+  question: What is the common web application security weakness related to input
+    validation?
+  query_type: exact_term
+  content_tags:
+  - lookup
+  expected_answer: failure to properly validate input coming from the client or the
+    environment before directly using it without any output encoding
+  answer_span: ''
+  ground_truth:
+  - chunk_id: p38_c00
+    page: 38
+    relevance: 3
+  - chunk_id: p58_c00
+    page: 58
+    relevance: 2
+  - chunk_id: p58_c02
+    page: 58
+    relevance: 2
+  - chunk_id: p59_c01
+    page: 59
+    relevance: 2
+  - chunk_id: p65_c05
+    page: 65
+    relevance: 2
+  - chunk_id: p15_c01
+    page: 15
+    relevance: 1
+  - chunk_id: p19_c01
+    page: 19
+    relevance: 1
+  - chunk_id: p38_c01
+    page: 38
+    relevance: 1
+  - chunk_id: p38_c02
+    page: 38
+    relevance: 1
+  - chunk_id: p38_c03
+    page: 38
+    relevance: 1
+  - chunk_id: p38_c04
+    page: 38
+    relevance: 1
+  - chunk_id: p39_c01
+    page: 39
+    relevance: 1
+  - chunk_id: p39_c02
+    page: 39
+    relevance: 1
+  - chunk_id: p39_c04
+    page: 39
+    relevance: 1
+  - chunk_id: p39_c05
+    page: 39
+    relevance: 1
+  - chunk_id: p40_c01
+    page: 40
+    relevance: 1
+  - chunk_id: p40_c02
+    page: 40
+    relevance: 1
+  - chunk_id: p40_c04
+    page: 40
+    relevance: 1
+  - chunk_id: p65_c03
+    page: 65
+    relevance: 1
+  notes: ''
+- id: q003
+  split: dev
+  provenance: auto
+  question: What should be ensured regarding the re-authentication of users by Credential
+    Service Providers (CSPs) after a specified period of inactivity?
+  query_type: paraphrase
+  content_tags:
+  - aggregation
+  expected_answer: Verify that Credential Service Providers (CSPs) inform Relying
+    Parties (RPs) of the last authentication event, to allow RPs to determine if they
+    need to re-authenticate the user.
+  answer_span: ''
+  ground_truth:
+  - chunk_id: p34_c01
+    page: 34
+    relevance: 3
+  - chunk_id: p23_c02
+    page: 23
+    relevance: 2
+  - chunk_id: p33_c01
+    page: 33
+    relevance: 2
+  - chunk_id: p24_c01
+    page: 24
+    relevance: 1
+  notes: ''
+- id: q004
+  split: dev
+  provenance: auto
+  question: What document provides guidelines on digital identity?
+  query_type: exact_term
+  content_tags:
+  - aggregation
+  expected_answer: NIST 800-63 - Digital Identity Guidelines
+  answer_span: ''
+  ground_truth:
+  - chunk_id: p22_c02
+    page: 22
+    relevance: 3
+  - chunk_id: p31_c01
+    page: 31
+    relevance: 3
+  - chunk_id: p9_c04
+    page: 9
+    relevance: 3
+  - chunk_id: p22_c04
+    page: 22
+    relevance: 2
+  - chunk_id: p17_c02
+    page: 17
+    relevance: 1
+  - chunk_id: p23_c01
+    page: 23
+    relevance: 1
+  - chunk_id: p23_c02
+    page: 23
+    relevance: 1
+  - chunk_id: p3_c02
+    page: 3
+    relevance: 1
+  notes: ''
+- id: q005
+  split: dev
+  provenance: auto
+  question: How can one ensure that the application maintains secure communication
+    between its components, especially when they reside in separate environments?
+  query_type: paraphrase
+  content_tags:
+  - policy
+  expected_answer: Verify the application encrypts communications between components,
+    particularly when these components are in different containers, systems, sites,
+    or cloud providers. (C3)
+  answer_span: ''
+  ground_truth:
+  - chunk_id: p18_c01
+    page: 18
+    relevance: 3
+  - chunk_id: p20_c02
+    page: 20
+    relevance: 3
+  - chunk_id: p50_c00
+    page: 50
+    relevance: 3
+  - chunk_id: p51_c01
+    page: 51
+    relevance: 3
+  - chunk_id: p12_c05
+    page: 12
+    relevance: 2
+  - chunk_id: p19_c02
+    page: 19
+    relevance: 2
+  - chunk_id: p47_c01
+    page: 47
+    relevance: 2
+  - chunk_id: p51_c00
+    page: 51
+    relevance: 2
+  - chunk_id: p17_c03
+    page: 17
+    relevance: 1
+  - chunk_id: p20_c01
+    page: 20
+    relevance: 1
+  - chunk_id: p20_c03
+    page: 20
+    relevance: 1
+  - chunk_id: p21_c01
+    page: 21
+    relevance: 1
+  - chunk_id: p21_c02
+    page: 21
+    relevance: 1
+  - chunk_id: p47_c00
+    page: 47
+    relevance: 1
+  - chunk_id: p53_c00
+    page: 53
+    relevance: 1
+  - chunk_id: p53_c01
+    page: 53
+    relevance: 1
+  - chunk_id: p61_c00
+    page: 61
+    relevance: 1
+  notes: ''
+- id: q006
+  split: dev
+  provenance: auto
+  question: What is the purpose of using the Application Security Verification Standard
+    in the context of creating security architecture for applications?
+  query_type: paraphrase
+  content_tags:
+  - lookup
+  expected_answer: One of the more common uses for the Application Security Verification
+    Standard is as a resource for security architects.
+  answer_span: ''
+  ground_truth:
+  - chunk_id: p15_c01
+    page: 15
+    relevance: 3
+  - chunk_id: p11_c00
+    page: 11
+    relevance: 2
+  - chunk_id: p12_c00
+    page: 12
+    relevance: 2
+  - chunk_id: p22_c04
+    page: 22
+    relevance: 2
+  - chunk_id: p2_c05
+    page: 2
+    relevance: 2
+  - chunk_id: p65_c01
+    page: 65
+    relevance: 2
+  - chunk_id: p7_c00
+    page: 7
+    relevance: 2
+  - chunk_id: p11_c01
+    page: 11
+    relevance: 1
+  - chunk_id: p12_c01
+    page: 12
+    relevance: 1
+  - chunk_id: p12_c04
+    page: 12
+    relevance: 1
+  - chunk_id: p12_c05
+    page: 12
+    relevance: 1
+  - chunk_id: p13_c01
+    page: 13
+    relevance: 1
+  - chunk_id: p14_c01
+    page: 14
+    relevance: 1
+  - chunk_id: p14_c04
+    page: 14
+    relevance: 1
+  - chunk_id: p15_c00
+    page: 15
+    relevance: 1
+  - chunk_id: p15_c02
+    page: 15
+    relevance: 1
+  - chunk_id: p15_c03
+    page: 15
+    relevance: 1
+  - chunk_id: p15_c04
+    page: 15
+    relevance: 1
+  - chunk_id: p15_c05
+    page: 15
+    relevance: 1
+  - chunk_id: p17_c00
+    page: 17
+    relevance: 1
+  - chunk_id: p17_c03
+    page: 17
+    relevance: 1
+  - chunk_id: p17_c05
+    page: 17
+    relevance: 1
+  - chunk_id: p18_c01
+    page: 18
+    relevance: 1
+  - chunk_id: p27_c00
+    page: 27
+    relevance: 1
+  - chunk_id: p38_c00
+    page: 38
+    relevance: 1
+  - chunk_id: p39_c03
+    page: 39
+    relevance: 1
+  - chunk_id: p9_c01
+    page: 9
+    relevance: 1
+  - chunk_id: p9_c04
+    page: 9
+    relevance: 1
+  notes: ''
+- id: q007
+  split: dev
+  provenance: auto
+  question: What measures should be taken to ensure that incoming requests to RESTful
+    services are legitimate and not tampered with during transmission?
+  query_type: paraphrase
+  content_tags:
+  - table
+  expected_answer: Verify that the message headers and payload are trustworthy and
+    not modified in transit. Requiring strong encryption for transport (TLS only)
+    may be sufficient in many cases as it provides both confidentiality and integrity
+    protection. Per-message digital signatures can provide additional assurance on
+    top of the transport protections for high-security applications but bring with
+    them additional complexity and risks to weigh against the benefits.
+  answer_span: ''
+  ground_truth:
+  - chunk_id: p59_c00
+    page: 59
+    relevance: 3
+  - chunk_id: p50_c01
+    page: 50
+    relevance: 2
+  - chunk_id: p51_c01
+    page: 51
+    relevance: 2
+  - chunk_id: p63_c03
+    page: 63
+    relevance: 2
+  - chunk_id: p19_c02
+    page: 19
+    relevance: 1
+  - chunk_id: p38_c03
+    page: 38
+    relevance: 1
+  - chunk_id: p48_c01
+    page: 48
+    relevance: 1
+  - chunk_id: p59_c01
+    page: 59
+    relevance: 1
+  - chunk_id: p63_c02
+    page: 63
+    relevance: 1
+  notes: ''
+- id: q008
+  split: dev
+  provenance: auto
+  question: What are the considerations for determining the appropriate ASVS level
+    based on the unique risk characteristics of an organization and how does this
+    relate to the secure generation and management of initial passwords?
+  query_type: multi_hop
+  content_tags:
+  - lookup
+  expected_answer: 'Organizations are strongly encouraged to look deeply at their
+    unique risk characteristics based on the nature of their business, and based upon
+    that risk and business requirements determine the appropriate ASVS level.
+
+    Verify system generated initial passwords or activation codes SHOULD be securely
+    randomly generated, SHOULD be at least 6 characters long, and MAY contain letters
+    and numbers, and expire after a short period of time. These initial secrets must
+    not be permitted to become the long term password.'
+  answer_span: ''
+  ground_truth:
+  - chunk_id: p13_c00
+    page: 13
+    relevance: 3
+  - chunk_id: p26_c01
+    page: 26
+    relevance: 3
+  - chunk_id: p11_c00
+    page: 11
+    relevance: 2
+  - chunk_id: p15_c02
+    page: 15
+    relevance: 2
+  - chunk_id: p22_c04
+    page: 22
+    relevance: 2
+  - chunk_id: p26_c00
+    page: 26
+    relevance: 2
+  - chunk_id: p11_c01
+    page: 11
+    relevance: 1
+  - chunk_id: p12_c00
+    page: 12
+    relevance: 1
+  - chunk_id: p12_c01
+    page: 12
+    relevance: 1
+  - chunk_id: p12_c04
+    page: 12
+    relevance: 1
+  - chunk_id: p12_c05
+    page: 12
+    relevance: 1
+  - chunk_id: p15_c05
+    page: 15
+    relevance: 1
+  - chunk_id: p16_c00
+    page: 16
+    relevance: 1
+  - chunk_id: p22_c01
+    page: 22
+    relevance: 1
+  - chunk_id: p22_c02
+    page: 22
+    relevance: 1
+  - chunk_id: p22_c03
+    page: 22
+    relevance: 1
+  - chunk_id: p23_c00
+    page: 23
+    relevance: 1
+  notes: ''
+- id: q009
+  split: dev
+  provenance: auto
+  question: What is the CWE associated with verifying that serialized objects use
+    integrity checks or are encrypted?
+  query_type: exact_term
+  content_tags:
+  - table
+  expected_answer: '502'
+  answer_span: ''
+  ground_truth:
+  - chunk_id: p19_c01
+    page: 19
+    relevance: 3
+  - chunk_id: p41_c00
+    page: 41
+    relevance: 3
+  notes: ''
+- id: q010
+  split: dev
+  provenance: auto
+  question: What are the requirements for verifying security in Internet of Things
+    systems?
+  query_type: paraphrase
+  content_tags:
+  - policy
+  expected_answer: Security Verification Requirements ...................................................................................................................
+    69
+  answer_span: ''
+  ground_truth:
+  - chunk_id: p17_c05
+    page: 17
+    relevance: 3
+  - chunk_id: p32_c01
+    page: 32
+    relevance: 3
+  - chunk_id: p51_c01
+    page: 51
+    relevance: 3
+  - chunk_id: p69_c01
+    page: 69
+    relevance: 3
+  - chunk_id: p69_c02
+    page: 69
+    relevance: 3
+  - chunk_id: p6_c03
+    page: 6
+    relevance: 3
+  - chunk_id: p70_c01
+    page: 70
+    relevance: 3
+  - chunk_id: p70_c02
+    page: 70
+    relevance: 3
+  - chunk_id: p70_c03
+    page: 70
+    relevance: 3
+  - chunk_id: p20_c02
+    page: 20
+    relevance: 2
+  - chunk_id: p21_c01
+    page: 21
+    relevance: 2
+  - chunk_id: p25_c03
+    page: 25
+    relevance: 2
+  - chunk_id: p28_c03
+    page: 28
+    relevance: 2
+  - chunk_id: p29_c01
+    page: 29
+    relevance: 2
+  - chunk_id: p29_c04
+    page: 29
+    relevance: 2
+  - chunk_id: p30_c01
+    page: 30
+    relevance: 2
+  - chunk_id: p51_c02
+    page: 51
+    relevance: 2
+  - chunk_id: p69_c00
+    page: 69
+    relevance: 2
+  - chunk_id: p10_c01
+    page: 10
+    relevance: 1
+  - chunk_id: p15_c02
+    page: 15
+    relevance: 1
+  - chunk_id: p15_c03
+    page: 15
+    relevance: 1
+  - chunk_id: p15_c04
+    page: 15
+    relevance: 1
+  - chunk_id: p15_c05
+    page: 15
+    relevance: 1
+  - chunk_id: p26_c00
+    page: 26
+    relevance: 1
+  - chunk_id: p28_c01
+    page: 28
+    relevance: 1
+  - chunk_id: p35_c01
+    page: 35
+    relevance: 1
+  - chunk_id: p51_c00
+    page: 51
+    relevance: 1
+  - chunk_id: p61_c00
+    page: 61
+    relevance: 1
+  - chunk_id: p61_c03
+    page: 61
+    relevance: 1
+  - chunk_id: p65_c01
+    page: 65
+    relevance: 1
+  - chunk_id: p71_c00
+    page: 71
+    relevance: 1
+  notes: ''
+- id: q011
+  split: dev
+  provenance: auto
+  question: What measures are recommended to ensure that web services properly authenticate
+    and manage sessions, and what specific security controls should be utilized for
+    APIs to prevent unauthorized access?
+  query_type: multi_hop
+  content_tags:
+  - policy
+  expected_answer: 'V13.1 Generic Web Service Security
+
+    Ensure that a verified application that uses trusted service layer APIs (commonly
+    using JSON or XML or GraphQL) has:'
+  answer_span: ''
+  ground_truth:
+  - chunk_id: p18_c01
+    page: 18
+    relevance: 3
+  - chunk_id: p32_c00
+    page: 32
+    relevance: 3
+  - chunk_id: p58_c01
+    page: 58
+    relevance: 3
+  - chunk_id: p5_c06
+    page: 5
+    relevance: 3
+  - chunk_id: p18_c00
+    page: 18
+    relevance: 2
+  - chunk_id: p30_c01
+    page: 30
+    relevance: 2
+  - chunk_id: p32_c01
+    page: 32
+    relevance: 2
+  - chunk_id: p33_c01
+    page: 33
+    relevance: 2
+  - chunk_id: p33_c03
+    page: 33
+    relevance: 2
+  - chunk_id: p34_c00
+    page: 34
+    relevance: 2
+  - chunk_id: p51_c01
+    page: 51
+    relevance: 2
+  - chunk_id: p58_c00
+    page: 58
+    relevance: 2
+  - chunk_id: p59_c00
+    page: 59
+    relevance: 2
+  - chunk_id: p15_c05
+    page: 15
+    relevance: 1
+  - chunk_id: p30_c02
+    page: 30
+    relevance: 1
+  - chunk_id: p35_c00
+    page: 35
+    relevance: 1
+  - chunk_id: p35_c03
+    page: 35
+    relevance: 1
+  - chunk_id: p36_c01
+    page: 36
+    relevance: 1
+  - chunk_id: p36_c02
+    page: 36
+    relevance: 1
+  - chunk_id: p37_c00
+    page: 37
+    relevance: 1
+  - chunk_id: p38_c00
+    page: 38
+    relevance: 1
+  - chunk_id: p38_c02
+    page: 38
+    relevance: 1
+  - chunk_id: p38_c03
+    page: 38
+    relevance: 1
+  - chunk_id: p45_c02
+    page: 45
+    relevance: 1
+  - chunk_id: p47_c01
+    page: 47
+    relevance: 1
+  - chunk_id: p47_c02
+    page: 47
+    relevance: 1
+  - chunk_id: p52_c00
+    page: 52
+    relevance: 1
+  - chunk_id: p57_c01
+    page: 57
+    relevance: 1
+  - chunk_id: p58_c02
+    page: 58
+    relevance: 1
+  - chunk_id: p58_c03
+    page: 58
+    relevance: 1
+  - chunk_id: p59_c01
+    page: 59
+    relevance: 1
+  - chunk_id: p5_c07
+    page: 5
+    relevance: 1
+  - chunk_id: p5_c08
+    page: 5
+    relevance: 1
+  - chunk_id: p63_c01
+    page: 63
+    relevance: 1
+  - chunk_id: p64_c01
+    page: 64
+    relevance: 1
+  - chunk_id: p66_c05
+    page: 66
+    relevance: 1
+  - chunk_id: p67_c02
+    page: 67
+    relevance: 1
+  notes: ''
+- id: q012
+  split: dev
+  provenance: auto
+  question: What should be ensured regarding the management of passwords and other
+    sensitive data to protect against offline attacks?
+  query_type: paraphrase
+  content_tags:
+  - lookup
+  expected_answer: Verify passwords, integrations with databases and third- party
+    systems, seeds and internal secrets, and API keys are managed securely and not
+    included in the source code or stored within source code repositories. Such storage
+    SHOULD resist offline attacks. The use of a secure software key store (L1), hardware
+    TPM, or an HSM (L3) is recommended for password storage.
+  answer_span: ''
+  ground_truth:
+  - chunk_id: p30_c02
+    page: 30
+    relevance: 3
+  - chunk_id: p19_c03
+    page: 19
+    relevance: 2
+  - chunk_id: p43_c02
+    page: 43
+    relevance: 2
+  - chunk_id: p22_c01
+    page: 22
+    relevance: 1
+  - chunk_id: p23_c01
+    page: 23
+    relevance: 1
+  - chunk_id: p24_c01
+    page: 24
+    relevance: 1
+  - chunk_id: p25_c01
+    page: 25
+    relevance: 1
+  - chunk_id: p26_c00
+    page: 26
+    relevance: 1
+  - chunk_id: p26_c01
+    page: 26
+    relevance: 1
+  - chunk_id: p26_c02
+    page: 26
+    relevance: 1
+  - chunk_id: p26_c03
+    page: 26
+    relevance: 1
+  - chunk_id: p27_c01
+    page: 27
+    relevance: 1
+  - chunk_id: p27_c02
+    page: 27
+    relevance: 1
+  - chunk_id: p30_c00
+    page: 30
+    relevance: 1
+  - chunk_id: p30_c01
+    page: 30
+    relevance: 1
+  - chunk_id: p48_c00
+    page: 48
+    relevance: 1
+  - chunk_id: p48_c01
+    page: 48
+    relevance: 1
+  - chunk_id: p48_c02
+    page: 48
+    relevance: 1
+  notes: ''
+- id: q013
+  split: dev
+  provenance: auto
+  question: What is the minimum entropy requirement for session tokens?
+  query_type: exact_term
+  content_tags:
+  - lookup
+  expected_answer: 64 bits
+  answer_span: ''
+  ground_truth:
+  - chunk_id: p32_c01
+    page: 32
+    relevance: 3
+  - chunk_id: p22_c03
+    page: 22
+    relevance: 1
+  notes: ''
+- id: q014
+  split: dev
+  provenance: auto
+  question: What should be verified to ensure that error messages do not expose sensitive
+    information when an unexpected error occurs?
+  query_type: paraphrase
+  content_tags:
+  - table
+  expected_answer: Verify that a generic message is shown when an unexpected or security
+    sensitive error occurs, potentially with a unique ID which support personnel can
+    use to investigate. (C10)
+  answer_span: ''
+  ground_truth:
+  - chunk_id: p46_c00
+    page: 46
+    relevance: 3
+  - chunk_id: p12_c01
+    page: 12
+    relevance: 1
+  - chunk_id: p46_c01
+    page: 46
+    relevance: 1
+  - chunk_id: p62_c04
+    page: 62
+    relevance: 1
+  notes: ''
+- id: q015
+  split: dev
+  provenance: auto
+  question: What is the term used for the security aspect related to unforeseen exposure
+    of sensitive information during application configuration?
+  query_type: exact_term
+  content_tags:
+  - aggregation
+  expected_answer: Unintended Security Disclosure
+  answer_span: ''
+  ground_truth:
+  - chunk_id: p5_c08
+    page: 5
+    relevance: 3
+  - chunk_id: p62_c03
+    page: 62
+    relevance: 3
+  - chunk_id: p11_c00
+    page: 11
+    relevance: 1
+  - chunk_id: p12_c01
+    page: 12
+    relevance: 1
+  notes: ''
+- id: q016
+  split: dev
+  provenance: auto
+  question: What verification measures should be taken to ensure that out of band
+    authenticators are secure and that APIs do not expose sensitive information?
+  query_type: multi_hop
+  content_tags:
+  - aggregation
+  expected_answer: 'Verify that the out of band verifier expires out of band authentication
+    requests, codes, or tokens after 10 minutes.
+
+    Verify API URLs do not expose sensitive information, such as the API key, session
+    tokens etc.'
+  answer_span: ''
+  ground_truth:
+  - chunk_id: p28_c03
+    page: 28
+    relevance: 3
+  - chunk_id: p58_c01
+    page: 58
+    relevance: 3
+  - chunk_id: p18_c00
+    page: 18
+    relevance: 1
+  - chunk_id: p18_c01
+    page: 18
+    relevance: 1
+  - chunk_id: p25_c00
+    page: 25
+    relevance: 1
+  - chunk_id: p25_c02
+    page: 25
+    relevance: 1
+  - chunk_id: p25_c03
+    page: 25
+    relevance: 1
+  - chunk_id: p28_c00
+    page: 28
+    relevance: 1
+  - chunk_id: p28_c01
+    page: 28
+    relevance: 1
+  - chunk_id: p28_c02
+    page: 28
+    relevance: 1
+  - chunk_id: p32_c01
+    page: 32
+    relevance: 1
+  - chunk_id: p44_c00
+    page: 44
+    relevance: 1
+  - chunk_id: p44_c01
+    page: 44
+    relevance: 1
+  - chunk_id: p45_c01
+    page: 45
+    relevance: 1
+  - chunk_id: p48_c01
+    page: 48
+    relevance: 1
+  - chunk_id: p48_c02
+    page: 48
+    relevance: 1
+  - chunk_id: p58_c00
+    page: 58
+    relevance: 1
+  notes: ''
+- id: q017
+  split: dev
+  provenance: auto
+  question: What is the CWE associated with verifying that the application protects
+    against JSON injection attacks?
+  query_type: exact_term
+  content_tags:
+  - table
+  expected_answer: '830'
+  answer_span: ''
+  ground_truth:
+  - chunk_id: p40_c01
+    page: 40
+    relevance: 3
+  - chunk_id: p38_c00
+    page: 38
+    relevance: 1
+  - chunk_id: p58_c02
+    page: 58
+    relevance: 1
+  notes: ''
+- id: q018
+  split: dev
+  provenance: auto
+  question: What are the various resources available for understanding digital identity
+    guidelines and authentication testing?
+  query_type: paraphrase
+  content_tags:
+  - aggregation
+  expected_answer: '- [NIST 800-63 - Digital Identity Guidelines](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-63-3.pdf)
+
+    - [NIST 800-63 A - Enrollment and Identity Proofing](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-63a.pdf)
+
+    - [NIST 800-63 B - Authentication and Lifecycle Management](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-63b.pdf)
+
+    - [NIST 800-63 C - Federation and Assertions](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-63c.pdf)
+
+    - [NIST 800-63 FAQ](https://pages.nist.gov/800-63-FAQ/)
+
+    - [OWASP Testing Guide 4.0: Testing for Authentication](https://owasp.org/www-project-web-security-testing-guide/v41/4-Web_Application_Security_Testing/04-Authentication_Testing/README.html)
+
+    - [OWASP Cheat Sheet - Password storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)
+
+    - [OWASP Cheat Sheet - Forgot password](https://cheatsheetseries.owasp.org/cheatsheets/Forgot_Password_Cheat_Sheet.html)
+
+    - [OWASP Cheat Sheet - Choosing and using security questions](https://cheatsheetseries.owasp.org/cheatsheets/Choosing_and_Using_Security_Questions_Cheat_Sheet.html)'
+  answer_span: ''
+  ground_truth:
+  - chunk_id: p31_c01
+    page: 31
+    relevance: 3
+  - chunk_id: p31_c02
+    page: 31
+    relevance: 2
+  - chunk_id: p22_c02
+    page: 22
+    relevance: 1
+  - chunk_id: p22_c03
+    page: 22
+    relevance: 1
+  - chunk_id: p22_c04
+    page: 22
+    relevance: 1
+  - chunk_id: p30_c04
+    page: 30
+    relevance: 1
+  - chunk_id: p35_c03
+    page: 35
+    relevance: 1
+  - chunk_id: p41_c01
+    page: 41
+    relevance: 1
+  - chunk_id: p43_c03
+    page: 43
+    relevance: 1
+  - chunk_id: p9_c04
+    page: 9
+    relevance: 1
+  notes: ''
+- id: q019
+  split: dev
+  provenance: auto
+  question: What is one of the OWASP resources available for understanding serverless
+    security risks?
+  query_type: exact_term
+  content_tags:
+  - policy
+  expected_answer: '[OWASP Serverless Top 10](https://github.com/OWASP/Serverless-Top-10-Project/raw/master/OWASP-Top-10-Serverless-Interpretation-en.pdf)'
+  answer_span: ''
+  ground_truth:
+  - chunk_id: p60_c01
+    page: 60
+    relevance: 3
+  - chunk_id: p68_c02
+    page: 68
+    relevance: 2
+  - chunk_id: p68_c01
+    page: 68
+    relevance: 1
+  notes: ''
+- id: q020
+  split: dev
+  provenance: auto
+  question: What is the description of the verification related to unauthorized phone
+    home or data collection capabilities?
+  query_type: exact_term
+  content_tags:
+  - table
+  expected_answer: Verify that the application source code and third party libraries
+    do not contain unauthorized phone home or data collection capabilities. Where
+    such functionality exists, obtain the user's permission for it to operate before
+    collecting any data.
+  answer_span: ''
+  ground_truth:
+  - chunk_id: p52_c02
+    page: 52
+    relevance: 3
+  - chunk_id: p48_c01
+    page: 48
+    relevance: 2
+  - chunk_id: p52_c00
+    page: 52
+    relevance: 1
+  - chunk_id: p52_c01
+    page: 52
+    relevance: 1
+  - chunk_id: p52_c03
+    page: 52
+    relevance: 1
+  notes: ''
