@@ -25,12 +25,15 @@ from agent_eval.adapters.fake import FakeAdapter  # noqa: E402
 from agent_eval.adapters.foundry_agent import (  # noqa: E402
     FoundryAgentAdapter,
     _extract_citations,
+    _extract_retrieved,
     _extract_text,
+    _extract_usage,
 )
 from agent_eval.context import (  # noqa: E402
     context_sanity,
     golden_page_context,
     load_pdf_pages,
+    retrieved_context,
 )
 from agent_eval.eval_agent import _load_golden, run_eval  # noqa: E402
 from agent_eval.judges.faithfulness import (  # noqa: E402
@@ -40,11 +43,15 @@ from agent_eval.judges.faithfulness import (  # noqa: E402
 )
 from agent_eval.judges.relevance import (  # noqa: E402
     citation_page_metrics,
+    cited_page_metrics,
     judge_answer_relevance,
+    parse_citation_marker,
     parse_relevance_verdict,
     quote_to_page,
+    retrieved_page_metrics,
+    snippet_to_page,
 )
-from agent_eval.adapters.base import Citation  # noqa: E402
+from agent_eval.adapters.base import Citation, RetrievedDoc  # noqa: E402
 
 FAITHFUL_JSON = json.dumps({
     "claims": [{"claim": "tokens need 64 bits",
@@ -240,6 +247,20 @@ class TestContext(unittest.TestCase):
         self.assertTrue(context_sanity(q, ctx))
         self.assertFalse(context_sanity(q, "unrelated text here"))
 
+    def test_retrieved_context_cited_first(self):
+        docs = [RetrievedDoc(doc_id="d0", snippet="first snippet"),
+                RetrievedDoc(doc_id="d1", snippet="second snippet"),
+                RetrievedDoc(doc_id="d2", snippet="third snippet")]
+        ctx = retrieved_context({2: 3}, docs)
+        # Cited doc (index 2) comes first, then the rest in order.
+        self.assertLess(ctx.index("third snippet"),
+                        ctx.index("first snippet"))
+        self.assertIn("[retrieved doc 2 | page 3]", ctx)
+        self.assertIn("[retrieved doc 0]", ctx)
+
+    def test_retrieved_context_empty_without_docs(self):
+        self.assertEqual(retrieved_context({}, []), "")
+
 
 class TestCitationMapping(unittest.TestCase):
     def test_quote_to_page(self):
@@ -275,6 +296,72 @@ class TestCitationMapping(unittest.TestCase):
         self.assertIsNone(out["metrics"])
         self.assertIn("no citation mapped", out["note"])
 
+    def test_snippet_to_page(self):
+        # Head window matches page 1; a later window also matches.
+        self.assertEqual(
+            snippet_to_page("The session token must have at least "
+                            "64 bits of entropy. Tokens are random.",
+                            PAGE_TEXTS), 1)
+        self.assertEqual(
+            snippet_to_page("Passwords must be stored using a secure "
+                            "key store or hardware module.", PAGE_TEXTS), 2)
+
+    def test_snippet_to_page_rejects_short_and_missing(self):
+        self.assertIsNone(snippet_to_page("short", PAGE_TEXTS))
+        self.assertIsNone(snippet_to_page(
+            "this sentence appears nowhere at all in the pages",
+            PAGE_TEXTS))
+
+    def test_retrieved_page_metrics(self):
+        q = {"ground_truth": [
+            {"chunk_id": "p1_c00", "page": 1, "relevance": 3},
+            {"chunk_id": "p2_c00", "page": 2, "relevance": 2}]}
+        docs = [RetrievedDoc(doc_id="d0", snippet=PAGE_TEXTS[0]),
+                RetrievedDoc(doc_id="d1", snippet=PAGE_TEXTS[1]),
+                RetrievedDoc(doc_id="d2", snippet=PAGE_TEXTS[1])]
+        out = retrieved_page_metrics(docs, q, PAGE_TEXTS)
+        # Deduplicated in retrieval order: p1 then p2.
+        self.assertEqual(out["ranked_pages"], ["p1", "p2"])
+        self.assertEqual(out["metrics"]["hit@3"], 1.0)
+        self.assertEqual(out["mapped"], 3)
+        self.assertEqual(out["retrieved"], 3)
+
+    def test_retrieved_page_metrics_none_without_docs(self):
+        q = {"ground_truth": [
+            {"chunk_id": "p1_c00", "page": 1, "relevance": 3}]}
+        out = retrieved_page_metrics([], q, PAGE_TEXTS)
+        self.assertIsNone(out["metrics"])
+        self.assertIn("no retrieved document mapped", out["note"])
+
+    def test_parse_citation_marker(self):
+        self.assertEqual(parse_citation_marker("【4:0†source】"), 0)
+        self.assertEqual(parse_citation_marker("【4:16†source】"), 16)
+        self.assertIsNone(parse_citation_marker("no marker here"))
+        self.assertIsNone(parse_citation_marker(""))
+
+    def test_cited_page_metrics(self):
+        q = {"ground_truth": [
+            {"chunk_id": "p1_c00", "page": 1, "relevance": 3},
+            {"chunk_id": "p2_c00", "page": 2, "relevance": 2}]}
+        docs = [RetrievedDoc(doc_id="d0", snippet=PAGE_TEXTS[0]),
+                RetrievedDoc(doc_id="d1", snippet=PAGE_TEXTS[1])]
+        cites = [Citation(marker="【4:0†source】"),
+                 Citation(marker="【4:1†source】"),
+                 Citation(marker="bogus")]
+        out = cited_page_metrics(cites, docs, q, PAGE_TEXTS)
+        self.assertEqual(out["ranked_pages"], ["p1", "p2"])
+        self.assertEqual(out["cited_doc_indices"], [0, 1])
+        self.assertEqual(out["metrics"]["hit@3"], 1.0)
+
+    def test_cited_page_metrics_none_without_markers(self):
+        q = {"ground_truth": [
+            {"chunk_id": "p1_c00", "page": 1, "relevance": 3}]}
+        docs = [RetrievedDoc(doc_id="d0", snippet=PAGE_TEXTS[0])]
+        out = cited_page_metrics([Citation(marker="bogus")], docs, q,
+                                 PAGE_TEXTS)
+        self.assertIsNone(out["metrics"])
+        self.assertIn("no citation marker resolved", out["note"])
+
 
 class _FakeItems:
     def create(self, conversation_id=None, items=None):
@@ -304,22 +391,42 @@ class _FakeOpenAIClient:
 
 
 class TestFoundryAdapter(unittest.TestCase):
-    def _response(self, text="answer text", citations=(), approval=False):
+    def _response(self, text="answer text", citations=(), approval=False,
+                  retrieved=None, model="gpt-4.1-mini-1", usage=None):
         output = []
         if approval:
             output.append(SimpleNamespace(
                 type="mcp_approval_request", name="tool",
                 server_label="srv"))
         else:
-            annotations = [
-                SimpleNamespace(type="file_citation", file_id=c["file_id"],
-                                filename=c["filename"], quote=c["quote"])
-                for c in citations]
+            annotations = []
+            for c in citations:
+                if "marker" in c:
+                    annotations.append(SimpleNamespace(
+                        type="url_citation", url=c.get("url", ""),
+                        start_index=c["start"], end_index=c["end"]))
+                else:
+                    annotations.append(SimpleNamespace(
+                        type="file_citation", file_id=c["file_id"],
+                        filename=c["filename"], quote=c["quote"]))
             output.append(SimpleNamespace(
                 type="message",
                 content=[SimpleNamespace(type="output_text", text=text,
                                          annotations=annotations)]))
-        return SimpleNamespace(output_text=text, output=output)
+            if retrieved is not None:
+                output.append(SimpleNamespace(
+                    type="mcp_call", name="knowledge_base_retrieve",
+                    server_label="kb-knowledgebase816-89xt9",
+                    output=json.dumps({"documents": retrieved})))
+        return SimpleNamespace(output_text=text, output=output,
+                                model=model,
+                                usage=SimpleNamespace(
+                                    input_tokens=(usage or {}).get(
+                                        "input_tokens", 0),
+                                    output_tokens=(usage or {}).get(
+                                        "output_tokens", 0),
+                                    total_tokens=(usage or {}).get(
+                                        "total_tokens", 0)))
 
     def test_extract_text_prefers_output_text(self):
         resp = self._response(text="hello")
@@ -339,16 +446,81 @@ class TestFoundryAdapter(unittest.TestCase):
         self.assertEqual(cites[0].file_id, "file-1")
         self.assertEqual(cites[0].quote, "some span")
 
+    def test_extract_url_citations(self):
+        # Marker spans are recovered from the answer text by indices.
+        text = "Session tokens need 64 bits.【4:0†source】【4:1†source】"
+        resp = self._response(
+            text=text,
+            citations=[{"marker": "【4:0†source】", "start": 28, "end": 40,
+                        "url": "https://example.com/doc.pdf"},
+                       {"marker": "【4:1†source】", "start": 40, "end": 52,
+                        "url": "https://example.com/doc.pdf"}])
+        cites = _extract_citations(resp, text)
+        self.assertEqual(len(cites), 2)
+        self.assertEqual(cites[0].marker, "【4:0†source】")
+        self.assertEqual(cites[0].url, "https://example.com/doc.pdf")
+        self.assertEqual(cites[1].marker, "【4:1†source】")
+
+    def test_extract_retrieved_docs(self):
+        docs = [
+            {"id": "d0",
+             "content": json.dumps(
+                 {"uid": "abc0_pages_16",
+                  "blob_url": "https://example.com/doc.pdf",
+                  "snippet": "The session token must have 64 bits."}),
+             "title": "https://example.com/doc.pdf"},
+            {"id": "d1",
+             "content": json.dumps(
+                 {"uid": "abc0_pages_32",
+                  "blob_url": "https://example.com/doc.pdf",
+                  "snippet": "Passwords need a secure key store."}),
+             "title": "https://example.com/doc.pdf"},
+        ]
+        resp = self._response(retrieved=docs)
+        out = _extract_retrieved(resp)
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[0].doc_id, "d0")
+        self.assertEqual(out[0].page_hint, 16)
+        self.assertIn("64 bits", out[0].snippet)
+        self.assertEqual(out[1].page_hint, 32)
+
+    def test_extract_retrieved_tolerates_bad_output(self):
+        resp = SimpleNamespace(output=[
+            SimpleNamespace(type="mcp_call", output="not json at all")])
+        self.assertEqual(_extract_retrieved(resp), [])
+        resp = SimpleNamespace(output=[])
+        self.assertEqual(_extract_retrieved(resp), [])
+
+    def test_extract_usage(self):
+        resp = self._response(usage={"input_tokens": 100,
+                                     "output_tokens": 20,
+                                     "total_tokens": 120})
+        self.assertEqual(_extract_usage(resp),
+                         {"input_tokens": 100, "output_tokens": 20,
+                          "total_tokens": 120})
+
     def test_ask_happy_path(self):
         resp = self._response(
             text="Session tokens need 64 bits.",
             citations=[{"file_id": "file-1", "filename": "doc.pdf",
-                        "quote": "at least 64 bits of entropy"}])
+                        "quote": "at least 64 bits of entropy"}],
+            retrieved=[{"id": "d0",
+                        "content": json.dumps(
+                            {"uid": "abc0_pages_16",
+                             "blob_url": "https://example.com/doc.pdf",
+                             "snippet": "64 bits of entropy."}),
+                        "title": "https://example.com/doc.pdf"}],
+            usage={"input_tokens": 100, "output_tokens": 20,
+                   "total_tokens": 120})
         adapter = FoundryAgentAdapter(
             _FakeOpenAIClient(resp), SimpleNamespace(name="agent"))
         out = adapter.ask("What is the minimum entropy?")
         self.assertEqual(out.answer, "Session tokens need 64 bits.")
         self.assertEqual(len(out.citations), 1)
+        self.assertEqual(len(out.retrieved), 1)
+        self.assertEqual(out.retrieved[0].page_hint, 16)
+        self.assertEqual(out.model, "gpt-4.1-mini-1")
+        self.assertEqual(out.usage["input_tokens"], 100)
         self.assertIsNone(out.error)
         self.assertGreaterEqual(out.latency_s, 0.0)
 
@@ -406,25 +578,80 @@ class TestRunner(unittest.TestCase):
         self.assertEqual(results["run"]["n"], 3)
         self.assertEqual(results["run"]["adapter"], "fake")
         per_q = {r["id"]: r for r in results["per_question"]}
-        # q1 faithful + relevant; q2 abstention (faithful, irrelevant);
-        # q3 unfaithful + partial.
-        self.assertTrue(per_q["q1"]["faithfulness"]["faithful"])
+        # q1 golden-faithful + relevant; q2 abstention (faithful,
+        # irrelevant); q3 golden-unfaithful + partial. The fake
+        # adapter retrieves nothing, so the primary (retrieved)
+        # faithfulness is unjudged except for the abstention.
+        self.assertIsNone(per_q["q1"]["faithfulness"]["faithful"])
+        self.assertEqual(per_q["q1"]["faithfulness"]["method"],
+                         "no-retrieved-docs")
+        self.assertTrue(per_q["q1"]["faithfulness_golden"]["faithful"])
         self.assertEqual(per_q["q1"]["relevance"]["verdict"], "RELEVANT")
         self.assertTrue(per_q["q2"]["faithfulness"]["faithful"])
         self.assertEqual(per_q["q2"]["faithfulness"]["method"],
                          "abstention-rule")
+        self.assertTrue(per_q["q2"]["faithfulness_golden"]["faithful"])
         self.assertEqual(per_q["q2"]["relevance"]["verdict"], "IRRELEVANT")
-        self.assertFalse(per_q["q3"]["faithfulness"]["faithful"])
+        self.assertIsNone(per_q["q3"]["faithfulness"]["faithful"])
+        self.assertFalse(per_q["q3"]["faithfulness_golden"]["faithful"])
         self.assertEqual(per_q["q3"]["relevance"]["verdict"], "PARTIAL")
-        # Citation mapping worked end to end for q1.
+        # Citation mapping worked end to end for q1 (quote-based).
         self.assertEqual(
             per_q["q1"]["page_metrics"]["metrics"]["hit@3"], 1.0)
         self.assertIsNone(per_q["q2"]["page_metrics"]["metrics"])
-        # Means divide by judged counts: faithfulness 2/3, relevance 1/3.
-        self.assertAlmostEqual(results["mean"]["faithfulness"], 2 / 3)
+        self.assertIsNone(
+            per_q["q1"]["retrieval_metrics"]["metrics"])
+        # Means divide by judged counts: golden faithfulness 2/3,
+        # retrieved faithfulness 1/1 (abstention only), relevance 1/3.
+        self.assertAlmostEqual(results["mean"]["faithfulness_golden"],
+                               2 / 3)
+        self.assertAlmostEqual(results["mean"]["faithfulness"], 1.0)
+        self.assertEqual(results["mean"]["faithfulness_n"], 1)
         self.assertAlmostEqual(results["mean"]["relevance"], 1 / 3)
         self.assertAlmostEqual(results["mean"]["partial"], 1 / 3)
         self.assertEqual(results["latency"]["n"], 3)
+
+    def test_full_run_with_retrieved_docs(self):
+        retrieved = {
+            "q1": [{"doc_id": "d0", "uid": "abc0_pages_5",
+                    "page_hint": 5, "snippet": PAGE_TEXTS[0]},
+                   {"doc_id": "d1", "uid": "abc0_pages_9",
+                    "page_hint": 9, "snippet": PAGE_TEXTS[1]}],
+        }
+        citations = {
+            "q1": [{"marker": "【4:0†source】"},
+                   {"marker": "【4:1†source】"}],
+        }
+        adapter = FakeAdapter(answers=self.answers,
+                              citations=citations, retrieved=retrieved)
+        results = run_eval(self.golden, self.pdf, adapter,
+                           llm_fn=stub_judge)
+        per_q = {r["id"]: r for r in results["per_question"]}
+        q1 = per_q["q1"]
+        # Retrieved docs mapped to pages 1 and 2; q1's ground truth
+        # is page 1 (grade 3).
+        self.assertEqual(q1["retrieved"],
+                         [{"doc_id": "d0", "page_hint": 5, "page": 1},
+                          {"doc_id": "d1", "page_hint": 9, "page": 2}])
+        self.assertEqual(
+            q1["retrieval_metrics"]["ranked_pages"], ["p1", "p2"])
+        self.assertEqual(
+            q1["retrieval_metrics"]["metrics"]["hit@3"], 1.0)
+        # Cited markers resolve to the same two pages.
+        self.assertEqual(
+            q1["citation_metrics"]["ranked_pages"], ["p1", "p2"])
+        self.assertEqual(
+            q1["citation_metrics"]["metrics"]["hit@3"], 1.0)
+        # Primary faithfulness judged against the retrieved snippets.
+        self.assertTrue(q1["faithfulness"]["faithful"])
+        self.assertEqual(q1["faithfulness"]["method"], "judge-v2")
+        self.assertTrue(q1["faithfulness_golden"]["faithful"])
+        # Means: retrieved faithfulness 2/2 (q1 + abstaining q2),
+        # golden faithfulness 2/3.
+        self.assertAlmostEqual(results["mean"]["faithfulness"], 1.0)
+        self.assertEqual(results["mean"]["faithfulness_n"], 2)
+        self.assertAlmostEqual(results["mean"]["faithfulness_golden"],
+                               2 / 3)
 
     def test_limit(self):
         adapter = FakeAdapter(answers=self.answers)
