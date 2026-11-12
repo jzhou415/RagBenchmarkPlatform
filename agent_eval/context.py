@@ -80,6 +80,44 @@ def golden_page_context(question: dict, pages: list[str],
     return out
 
 
+def retrieved_context(cited_pages: dict, retrieved, char_budget: int
+                      = DEFAULT_CHAR_BUDGET) -> str:
+    """Judge context from what the agent actually retrieved.
+
+    `retrieved` is the adapter's RetrievedDoc list (retrieval order);
+    `cited_pages` maps doc index -> PDF page (from the citation-marker
+    mapping, or {} when the markers did not parse). Snippets are taken
+    cited-first, then the remaining retrieved docs in retrieval order,
+    each marked "[retrieved doc i | page P]" (page omitted when
+    unmapped), until the char budget fills. Returns "" when the agent
+    retrieved nothing -- the runner then records faithfulness as
+    not-run rather than judging against an empty context.
+    """
+    if not retrieved:
+        return ""
+    order = sorted(cited_pages.keys())
+    order += [i for i in range(len(retrieved)) if i not in cited_pages]
+    chunks = []
+    total = 0
+    for i in order:
+        doc = retrieved[i]
+        snippet = (doc.snippet or "").strip()
+        if not snippet:
+            continue
+        page = cited_pages.get(i)
+        label = (f"[retrieved doc {i} | page {page}]"
+                 if page else f"[retrieved doc {i}]")
+        text = f"{label}\n{snippet}"
+        if chunks and total + len(text) > char_budget:
+            break
+        chunks.append(text)
+        total += len(text)
+    out = "\n\n---\n\n".join(chunks)
+    if len(out) > char_budget:
+        out = out[:char_budget] + "\n\n[... context truncated ...]"
+    return out
+
+
 def context_sanity(question: dict, context: str) -> bool:
     """Lenient self-check: does the context contain the expected answer?
 

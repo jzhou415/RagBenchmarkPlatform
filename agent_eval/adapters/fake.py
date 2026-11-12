@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from .base import AgentResponse, Citation
+from .base import AgentResponse, Citation, RetrievedDoc
 
 
 class FakeAdapter:
@@ -20,7 +20,8 @@ class FakeAdapter:
 
     def __init__(self, answers: Optional[dict] = None,
                  answers_path: Optional[Path] = None,
-                 citations: Optional[dict] = None):
+                 citations: Optional[dict] = None,
+                 retrieved: Optional[dict] = None):
         self._answers = dict(answers or {})
         if answers_path is not None:
             with open(answers_path, encoding="utf-8") as f:
@@ -28,6 +29,9 @@ class FakeAdapter:
         # citations: {question_id: [{"file_id":..., "filename":...,
         #   "quote":...}]} -- lets tests exercise citation mapping.
         self._citations = citations or {}
+        # retrieved: {question_id: [{doc_id, uid, snippet, title,
+        #   page_hint}]} -- lets tests exercise retrieval mapping.
+        self._retrieved = retrieved or {}
         self._current_id = None
 
     def set_question_id(self, qid: str) -> None:
@@ -40,4 +44,7 @@ class FakeAdapter:
             "I don't know"
         cites = [Citation(**c) for c in self._citations.get(qid, [])] \
             if qid else []
-        return AgentResponse(answer=answer, citations=cites, latency_s=0.01)
+        docs = [RetrievedDoc(**d) for d in self._retrieved.get(qid, [])] \
+            if qid else []
+        return AgentResponse(answer=answer, citations=cites,
+                             retrieved=docs, latency_s=0.01)

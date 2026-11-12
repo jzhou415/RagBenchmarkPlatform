@@ -9,7 +9,8 @@ Usage (on the PC that holds the Azure login, the .env, and the PDF):
     # 2. Smoke test: first 5 questions.
     python -m agent_eval.eval_agent --pdf OWASP-ASVS-4.0.3-en.pdf --limit 5
 
-    # 3. Full dev run (20 questions, ~40 gpt-4o-mini judge calls).
+    # 3. Full dev run (20 questions, ~60 gpt-4o-mini judge calls --
+    #    faithfulness x2 + relevance per question).
     python -m agent_eval.eval_agent --pdf OWASP-ASVS-4.0.3-en.pdf
 
     # No Azure / no key: fake adapter + stub-free run (judges skipped).
@@ -31,6 +32,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import yaml
 
@@ -46,11 +48,15 @@ from agent_eval.context import (
     context_sanity,
     golden_page_context,
     load_pdf_pages,
+    retrieved_context,
 )
-from agent_eval.judges.faithfulness import judge_faithfulness
+from agent_eval.judges.faithfulness import is_abstention, judge_faithfulness
 from agent_eval.judges.relevance import (
     citation_page_metrics,
+    cited_page_metrics,
     judge_answer_relevance,
+    retrieved_doc_pages,
+    retrieved_page_metrics,
 )
 
 DEFAULT_GOLDEN = Path(__file__).resolve().parent / "data" / "golden_dev.yaml"
@@ -91,6 +97,14 @@ def _aggregate(per_question: list[dict]) -> dict:
                 1 for q in judged_f if q["faithfulness"]["faithful"]
             ) / len(judged_f)
             out["faithfulness_n"] = len(judged_f)
+        judged_g = [q for q in qs
+                    if q["faithfulness_golden"].get("faithful") is not None]
+        if judged_g:
+            out["faithfulness_golden"] = sum(
+                1 for q in judged_g
+                if q["faithfulness_golden"]["faithful"]
+            ) / len(judged_g)
+            out["faithfulness_golden_n"] = len(judged_g)
         judged_r = [q for q in qs
                     if q["relevance"].get("verdict") is not None]
         if judged_r:
@@ -135,6 +149,7 @@ def run_eval(golden_path: Path, pdf_path: Path, adapter,
     started = datetime.now(timezone.utc).isoformat()
     per_question: list[dict] = []
     latencies: list[float] = []
+    first_model: Optional[str] = None
 
     for q in questions:
         qid = q["id"]
@@ -146,6 +161,8 @@ def run_eval(golden_path: Path, pdf_path: Path, adapter,
         except Exception as e:  # noqa: BLE001 -- recorded, run continues
             resp = AgentResponse(error=f"adapter raised: {e}")
         latencies.append(resp.latency_s)
+        if first_model is None and getattr(resp, "model", ""):
+            first_model = resp.model
         rec: dict = {
             "id": qid,
             "question": q["question"],
@@ -153,14 +170,24 @@ def run_eval(golden_path: Path, pdf_path: Path, adapter,
             "content_tags": q.get("content_tags", []),
             "answer": resp.answer,
             "citations": [{"file_id": c.file_id, "filename": c.filename,
-                           "quote": c.quote} for c in resp.citations],
+                           "quote": c.quote, "marker": c.marker,
+                           "url": c.url} for c in resp.citations],
+            "retrieved": [],
             "latency_s": round(resp.latency_s, 3),
             "error": resp.error,
+            # "faithfulness" is the PRIMARY number: judged against
+            # what the agent retrieved (cited snippets first). The
+            # golden-pages judge moved to "faithfulness_golden".
             "faithfulness": {"faithful": None, "method": "not-run",
                              "claims": [], "raw": ""},
+            "faithfulness_golden": {"faithful": None,
+                                    "method": "not-run",
+                                    "claims": [], "raw": ""},
             "relevance": {"verdict": None, "reason": "",
                           "method": "not-run"},
-            "page_metrics": None,
+            "retrieval_metrics": None,
+            "citation_metrics": None,
+            "page_metrics": None,  # alias of citation_metrics (probe compat)
         }
         if resp.error:
             print(f"  error: {resp.error}")
@@ -173,20 +200,57 @@ def run_eval(golden_path: Path, pdf_path: Path, adapter,
             rec["context_warning"] = True
         # Deterministic, no LLM call: computed even when judges are skipped.
         try:
-            rec["page_metrics"] = citation_page_metrics(
-                resp.citations, q, pages)
+            doc_pages = retrieved_doc_pages(resp.retrieved, pages)
+            rec["retrieved"] = [
+                {"doc_id": d.doc_id, "page_hint": d.page_hint,
+                 "page": doc_pages.get(i)}
+                for i, d in enumerate(resp.retrieved)]
+            rec["retrieval_metrics"] = retrieved_page_metrics(
+                resp.retrieved, q, pages)
         except Exception as e:  # noqa: BLE001
-            rec["page_metrics"] = {"metrics": None,
-                                   "note": f"mapping failed: {e}"}
+            rec["retrieval_metrics"] = {"metrics": None,
+                                        "note": f"mapping failed: {e}"}
+        try:
+            if resp.citations and any(
+                    getattr(c, "marker", "") for c in resp.citations):
+                rec["citation_metrics"] = cited_page_metrics(
+                    resp.citations, resp.retrieved, q, pages)
+            else:
+                rec["citation_metrics"] = citation_page_metrics(
+                    resp.citations, q, pages)
+            rec["page_metrics"] = rec["citation_metrics"]
+        except Exception as e:  # noqa: BLE001
+            rec["citation_metrics"] = {"metrics": None,
+                                       "note": f"mapping failed: {e}"}
+            rec["page_metrics"] = rec["citation_metrics"]
         if skip_judges:
             per_question.append(rec)
             continue
+        # Primary faithfulness: vs the retrieved snippets (cited first).
+        # No retrieved docs -> not judged, unless the answer is an
+        # abstention or empty (both are context-independent rules).
         try:
-            rec["faithfulness"] = judge_faithfulness(
-                q["question"], resp.answer, context, llm_fn=llm_fn)
+            rctx = retrieved_context(doc_pages, resp.retrieved,
+                                     char_budget)
+            if (rctx or is_abstention(resp.answer)
+                    or not (resp.answer or "").strip()):
+                rec["faithfulness"] = judge_faithfulness(
+                    q["question"], resp.answer, rctx, llm_fn=llm_fn)
+            else:
+                rec["faithfulness"] = {
+                    "faithful": None, "method": "no-retrieved-docs",
+                    "claims": [], "raw": ""}
         except Exception as e:  # noqa: BLE001 -- judge failure, not fatal
             rec["faithfulness"] = {"faithful": None, "method": "judge-error",
                                    "claims": [], "raw": "", "error": str(e)}
+        # Cross-check faithfulness: vs the golden pages (true source).
+        try:
+            rec["faithfulness_golden"] = judge_faithfulness(
+                q["question"], resp.answer, context, llm_fn=llm_fn)
+        except Exception as e:  # noqa: BLE001 -- judge failure, not fatal
+            rec["faithfulness_golden"] = {
+                "faithful": None, "method": "judge-error",
+                "claims": [], "raw": "", "error": str(e)}
         try:
             rec["relevance"] = judge_answer_relevance(
                 q["question"], resp.answer,
@@ -195,16 +259,19 @@ def run_eval(golden_path: Path, pdf_path: Path, adapter,
             rec["relevance"] = {"verdict": None, "reason": "",
                                 "method": "judge-error", "error": str(e)}
         f = rec["faithfulness"].get("faithful")
+        fg = rec["faithfulness_golden"].get("faithful")
         r = rec["relevance"].get("verdict")
-        print(f"  faithful={f} relevance={r} "
+        print(f"  faithful={f} faithful_golden={fg} relevance={r} "
               f"latency={resp.latency_s:.2f}s "
-              f"citations={len(resp.citations)}")
+              f"citations={len(resp.citations)} "
+              f"retrieved={len(resp.retrieved)}")
         per_question.append(rec)
 
     agg = _aggregate(per_question)
     results = {
         "run": {
             "adapter": getattr(adapter, "name", "?"),
+            "model": first_model,
             "golden": str(golden_path),
             "corpus": golden.get("corpus", {}).get("name", "?"),
             "pdf": str(pdf_path),
@@ -234,6 +301,9 @@ def main(argv=None) -> int:
     ap.add_argument("--fake-citations", type=Path, default=None,
                     help="JSON {question_id: [{file_id, filename, quote}]} "
                          "for --adapter fake")
+    ap.add_argument("--fake-retrieved", type=Path, default=None,
+                    help="JSON {question_id: [{doc_id, uid, snippet, "
+                         "title, page_hint}]} for --adapter fake")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--probe", action="store_true",
                     help="one question + dump the raw Foundry response")
@@ -262,8 +332,12 @@ def main(argv=None) -> int:
         if args.fake_citations is not None:
             with open(args.fake_citations, encoding="utf-8") as f:
                 citations = json.load(f)
+        retrieved = None
+        if args.fake_retrieved is not None:
+            with open(args.fake_retrieved, encoding="utf-8") as f:
+                retrieved = json.load(f)
         adapter = FakeAdapter(answers_path=args.fake_answers,
-                              citations=citations)
+                              citations=citations, retrieved=retrieved)
     else:
         try:
             adapter = build_foundry_adapter(raw_dir=raw_dir)
@@ -289,7 +363,8 @@ def main(argv=None) -> int:
     if args.probe and raw_dir is not None:
         print("probe raw response dumped to "
               f"{raw_dir} -- inspect it for the citation shape "
-              "(file_citation annotations, quotes?) before the full run")
+              "(url_citation markers? mcp_call documents?) before the "
+              "full run")
     return 0
 
 
