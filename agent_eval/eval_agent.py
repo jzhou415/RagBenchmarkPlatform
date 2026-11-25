@@ -17,6 +17,12 @@ Usage (on the PC that holds the Azure login, the .env, and the PDF):
     python -m agent_eval.eval_agent --pdf OWASP-ASVS-4.0.3-en.pdf \\
         --adapter fake --skip-judges --out /tmp/smoke.json
 
+    # The platform itself, against its own OWASP indexes (on the PC
+    # that holds data1/ -- golden questions and indexes already built):
+    python -m agent_eval.eval_agent --pdf OWASP-ASVS-4.0.3-en.pdf \\
+        --adapter platform --platform-indexes data1 \\
+        --platform-manifest data1/manifest_full.jsonl --limit 1
+
 Output is the platform's result shape -- run / per_question / mean /
 by_query_type / by_content_tag / latency -- so the Results page can
 compare this run against the platform's own eval runs. Per-question
@@ -44,6 +50,7 @@ except ImportError:  # flat local working copy (~/workspace/user/rag/)
 from agent_eval.adapters.base import AgentResponse  # noqa: F401  (typing)
 from agent_eval.adapters.fake import FakeAdapter
 from agent_eval.adapters.foundry_agent import build_foundry_adapter
+from agent_eval.adapters.platform import build_platform_adapter
 from agent_eval.context import (
     context_sanity,
     golden_page_context,
@@ -294,7 +301,7 @@ def main(argv=None) -> int:
     ap.add_argument("--golden", type=Path, default=DEFAULT_GOLDEN)
     ap.add_argument("--pdf", type=Path, required=True,
                     help="source PDF (OWASP-ASVS-4.0.3-en.pdf)")
-    ap.add_argument("--adapter", choices=["foundry", "fake"],
+    ap.add_argument("--adapter", choices=["foundry", "fake", "platform"],
                     default="foundry")
     ap.add_argument("--fake-answers", type=Path, default=None,
                     help="JSON {question_id: answer} for --adapter fake")
@@ -304,6 +311,31 @@ def main(argv=None) -> int:
     ap.add_argument("--fake-retrieved", type=Path, default=None,
                     help="JSON {question_id: [{doc_id, uid, snippet, "
                          "title, page_hint}]} for --adapter fake")
+    ap.add_argument("--platform-indexes", type=Path, default=None,
+                    help="indexes dir holding bm25_<hash>/ and "
+                         "dense_<hash>/ (e.g. data1) for --adapter platform")
+    ap.add_argument("--platform-manifest", type=Path, default=None,
+                    help="chunk manifest jsonl (chunk_id -> text, page_no) "
+                         "for --adapter platform")
+    ap.add_argument("--platform-rung",
+                    choices=["semantic", "bm25", "hybrid", "hybrid_rerank"],
+                    default="hybrid_rerank",
+                    help="retrieval rung for --adapter platform")
+    ap.add_argument("--platform-top-k", type=int, default=5,
+                    help="chunks retrieved per question (generation "
+                         "context) for --adapter platform")
+    ap.add_argument("--platform-candidate-k", type=int, default=20,
+                    help="hybrid candidates the reranker sees "
+                         "(hybrid_rerank only)")
+    ap.add_argument("--platform-rrf-k", type=int, default=60)
+    ap.add_argument("--platform-depth", type=int, default=50,
+                    help="per-rung depth fused by RRF")
+    ap.add_argument("--platform-model", default="gpt-4o-mini",
+                    help="generator model for --adapter platform")
+    ap.add_argument("--platform-reranker", default="cross-encoder",
+                    choices=["cross-encoder", "cohere"],
+                    help="reranker for the hybrid_rerank rung")
+    ap.add_argument("--platform-reranker-model", default=None)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--probe", action="store_true",
                     help="one question + dump the raw Foundry response")
@@ -338,6 +370,20 @@ def main(argv=None) -> int:
                 retrieved = json.load(f)
         adapter = FakeAdapter(answers_path=args.fake_answers,
                               citations=citations, retrieved=retrieved)
+    elif args.adapter == "platform":
+        try:
+            adapter = build_platform_adapter(
+                indexes_dir=args.platform_indexes,
+                manifest_path=args.platform_manifest,
+                rung=args.platform_rung, top_k=args.platform_top_k,
+                candidate_k=args.platform_candidate_k,
+                rrf_k=args.platform_rrf_k, depth=args.platform_depth,
+                model=args.platform_model,
+                reranker=args.platform_reranker,
+                reranker_model=args.platform_reranker_model)
+        except Exception as e:  # noqa: BLE001 -- fatal: no agent, no run
+            print(f"cannot build platform adapter: {e}", file=sys.stderr)
+            return 2
     else:
         try:
             adapter = build_foundry_adapter(raw_dir=raw_dir)
