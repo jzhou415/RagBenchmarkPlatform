@@ -52,6 +52,11 @@ from agent_eval.judges.relevance import (  # noqa: E402
     snippet_to_page,
 )
 from agent_eval.adapters.base import Citation, RetrievedDoc  # noqa: E402
+from agent_eval.adapters.platform import (  # noqa: E402
+    PlatformAdapter,
+    _build_context,
+    _ensure_src_shim,
+)
 
 FAITHFUL_JSON = json.dumps({
     "claims": [{"claim": "tokens need 64 bits",
@@ -542,6 +547,170 @@ class TestFoundryAdapter(unittest.TestCase):
         adapter = FoundryAgentAdapter(client, SimpleNamespace(name="agent"))
         out = adapter.ask("question")
         self.assertIn("boom", out.error)
+
+
+class TestPlatformAdapter(unittest.TestCase):
+    """The platform's own ladder + generator behind ask(). No keys,
+    no indexes: retrieval and generation are injected fakes."""
+
+    def setUp(self):
+        self.texts = {
+            "p1_c00": (PAGE_TEXTS[0], 1),
+            "p2_c00": (PAGE_TEXTS[1], 2),
+            "p3_c00": (PAGE_TEXTS[2], 3),
+        }
+        self.ranked = [("p1_c00", 0.9), ("p2_c00", 0.7)]
+
+    def _adapter(self, answer="Session tokens need 64 bits.", **kw):
+        calls = {}
+
+        def retrieve_fn(question):
+            calls["question"] = question
+            return list(self.ranked)
+
+        def generate_fn(question, context):
+            calls["context"] = context
+            return answer, {"total_tokens": 42}
+
+        adapter = PlatformAdapter(
+            texts=dict(self.texts), retrieve_fn=retrieve_fn,
+            generate_fn=generate_fn, **kw)
+        adapter._calls = calls
+        return adapter
+
+    def test_ask_returns_answer_and_retrieved_docs(self):
+        adapter = self._adapter()
+        resp = adapter.ask("What is the minimum entropy requirement?")
+        self.assertEqual(resp.answer, "Session tokens need 64 bits.")
+        self.assertIsNone(resp.error)
+        self.assertEqual(resp.model, "gpt-4o-mini")
+        self.assertEqual(resp.usage, {"total_tokens": 42})
+        self.assertGreaterEqual(resp.latency_s, 0.0)
+        self.assertEqual(resp.citations, [])
+        self.assertEqual([d.doc_id for d in resp.retrieved],
+                         ["p1_c00", "p2_c00"])
+        self.assertEqual(resp.retrieved[0].snippet, PAGE_TEXTS[0])
+        # True manifest page as the hint (the harness still maps the
+        # page from the snippet text; the hint is for debugging).
+        self.assertEqual(resp.retrieved[0].page_hint, 1)
+        self.assertEqual(resp.retrieved[1].page_hint, 2)
+
+    def test_generate_context_carries_page_marked_chunks(self):
+        adapter = self._adapter()
+        adapter.ask("What is the minimum entropy requirement?")
+        ctx = adapter._calls["context"]
+        self.assertEqual(adapter._calls["question"],
+                         "What is the minimum entropy requirement?")
+        self.assertIn("[page 1]", ctx)
+        self.assertIn("64 bits of entropy", ctx)
+        self.assertIn("[page 2]", ctx)
+
+    def test_retrieve_error_recorded_not_raised(self):
+        def boom(question):
+            raise RuntimeError("index missing")
+
+        adapter = PlatformAdapter(
+            texts=dict(self.texts), retrieve_fn=boom,
+            generate_fn=lambda q, c: ("x", {}))
+        resp = adapter.ask("q")
+        self.assertEqual(resp.answer, "")
+        self.assertIn("index missing", resp.error)
+
+    def test_generate_error_recorded_not_raised(self):
+        def boom(question, context):
+            raise RuntimeError("llm down")
+
+        adapter = PlatformAdapter(
+            texts=dict(self.texts),
+            retrieve_fn=lambda q: list(self.ranked),
+            generate_fn=boom)
+        resp = adapter.ask("q")
+        self.assertEqual(resp.answer, "")
+        self.assertIn("llm down", resp.error)
+
+    def test_abstention_passes_through(self):
+        adapter = self._adapter(answer="I don't know")
+        resp = adapter.ask("q")
+        self.assertEqual(resp.answer, "I don't know")
+        self.assertIsNone(resp.error)
+
+    def test_build_context_skips_chunks_missing_from_texts(self):
+        ranked = [("p1_c00", 0.9), ("ghost", 0.8)]
+        ctx = _build_context(ranked, self.texts)
+        self.assertIn("64 bits", ctx)
+        self.assertNotIn("ghost", ctx)
+
+    def test_src_shim_registers_flat_dir(self):
+        tmp = tempfile.TemporaryDirectory()
+        probe = Path(tmp.name) / "probe_mod.py"
+        probe.write_text("MARKER = 123\n", encoding="utf-8")
+        saved_path = list(sys.path)
+        saved_src = sys.modules.pop("src", None)
+        try:
+            sys.path = [p for p in sys.path if "shim" not in p]
+            sys.modules.pop("src", None)
+            _ensure_src_shim(Path(tmp.name))
+            import src.probe_mod as probe_mod
+
+            self.assertEqual(probe_mod.MARKER, 123)
+        finally:
+            sys.path = saved_path
+            sys.modules.pop("src", None)
+            if saved_src is not None:
+                sys.modules["src"] = saved_src
+            tmp.cleanup()
+
+    def test_run_eval_with_platform_adapter(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        pdf = Path(tmp.name) / "test.pdf"
+        make_pdf(pdf, PAGE_TEXTS)
+        golden = Path(tmp.name) / "golden.yaml"
+        golden.write_text(GOLDEN_YAML, encoding="utf-8")
+        adapter = self._adapter()
+        results = run_eval(golden, pdf, adapter, llm_fn=stub_judge)
+        self.assertEqual(results["run"]["adapter"], "platform")
+        self.assertEqual(results["run"]["n"], 3)
+        per_q = {r["id"]: r for r in results["per_question"]}
+        q1 = per_q["q1"]
+        # Retrieved docs mapped to pages 1 and 2 from the snippet
+        # text; q1's ground truth is page 1 (grade 3).
+        self.assertEqual(
+            q1["retrieval_metrics"]["ranked_pages"], ["p1", "p2"])
+        self.assertEqual(
+            q1["retrieval_metrics"]["metrics"]["hit@3"], 1.0)
+        # Primary faithfulness judged against the retrieved snippets.
+        self.assertTrue(q1["faithfulness"]["faithful"])
+        self.assertEqual(q1["faithfulness"]["method"], "judge-v2")
+        self.assertTrue(q1["faithfulness_golden"]["faithful"])
+        self.assertEqual(q1["relevance"]["verdict"], "RELEVANT")
+        # No citations in v1, so citation metrics are None.
+        self.assertIsNone(q1["citation_metrics"]["metrics"])
+        self.assertAlmostEqual(results["mean"]["faithfulness"], 1.0)
+        self.assertEqual(results["latency"]["n"], 3)
+
+    def test_main_platform_without_key_returns_2(self):
+        # Proves --adapter platform reaches the platform builder
+        # (which fails fast on the missing key) instead of falling
+        # through to Foundry. The key is forced empty so a .env file
+        # cannot rescue it (load_dotenv never overwrites existing
+        # vars); the manifest exists so the failure is the key check.
+        from unittest import mock
+
+        from agent_eval.eval_agent import main as eval_main
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        manifest = Path(tmp.name) / "manifest.jsonl"
+        manifest.write_text(
+            json.dumps({"chunk_id": "p1_c00", "text": PAGE_TEXTS[0],
+                        "page_no": 1}) + "\n", encoding="utf-8")
+        argv = ["--pdf", str(Path(tmp.name) / "test.pdf"),
+                "--adapter", "platform",
+                "--platform-indexes", str(Path(tmp.name) / "data1"),
+                "--platform-manifest", str(manifest)]
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
+            self.assertEqual(eval_main(argv), 2)
 
 
 class TestRunner(unittest.TestCase):
